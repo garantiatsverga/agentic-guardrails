@@ -6,6 +6,8 @@
 //! API 1:1 с Python-версией. Потокобезопасен через AtomicU64.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+use std::sync::Mutex;
 
 /// Состояние бюджета.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,27 +55,46 @@ pub struct CostBreaker {
     per_task: Budget,
     per_session: Budget,
     per_horizon: Budget,
+    horizon_seconds: f64,
     task_used: AtomicU64,
     session_used: AtomicU64,
     horizon_used: AtomicU64,
+    horizon_start: Mutex<Instant>,
 }
 
 impl CostBreaker {
-    pub fn new(per_task: Budget, per_session: Budget, per_horizon: Budget) -> Self {
+    pub fn new(
+        per_task: Budget,
+        per_session: Budget,
+        per_horizon: Budget,
+        horizon_seconds: f64,
+    ) -> Self {
         Self {
             per_task,
             per_session,
             per_horizon,
+            horizon_seconds,
             task_used: AtomicU64::new(0),
             session_used: AtomicU64::new(0),
             horizon_used: AtomicU64::new(0),
+            horizon_start: Mutex::new(Instant::now()),
         }
     }
 
-    /// Списывает токены и возвращает текущее состояние.
-    ///
-    /// Приоритет: Hard > Soft > Ok.
+    fn maybe_reset_horizon(&self) {
+        if self.horizon_seconds <= 0.0 {
+            return;
+        }
+        let mut start = self.horizon_start.lock().unwrap();
+        if start.elapsed().as_secs_f64() >= self.horizon_seconds {
+            self.horizon_used.store(0, Ordering::Relaxed);
+            *start = Instant::now();
+        }
+    }
+
     pub fn charge(&self, tokens: u64) -> CostState {
+        self.maybe_reset_horizon();
+
         let task = self.task_used.fetch_add(tokens, Ordering::Relaxed) + tokens;
         let session = self.session_used.fetch_add(tokens, Ordering::Relaxed) + tokens;
         let horizon = self.horizon_used.fetch_add(tokens, Ordering::Relaxed) + tokens;
@@ -124,6 +145,7 @@ mod tests {
             Budget::new(task, 0.7),
             Budget::new(session, 0.7),
             Budget::new(horizon, 0.7),
+            0.0,
         )
     }
 
@@ -166,6 +188,19 @@ mod tests {
         cb.reset_session();
         assert_eq!(cb.task_used(), 0);
         assert_eq!(cb.session_used(), 0);
+    }
+
+    #[test]
+    fn horizon_resets_after_timeout() {
+        let cb = CostBreaker::new(
+            Budget::new(10_u64.pow(9), 0.7),
+            Budget::new(10_u64.pow(9), 0.7),
+            Budget::new(1000, 0.7),
+            0.01,
+        );
+        cb.charge(900);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(cb.charge(200), CostState::Ok);
     }
 
     #[test]

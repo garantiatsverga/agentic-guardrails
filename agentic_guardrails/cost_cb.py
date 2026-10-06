@@ -30,6 +30,9 @@ class CostBreaker:
 
     Три уровня бюджета: per-task, per-session, per-horizon.
     Гонки исключены на уровне Rust (AtomicU64).
+
+    horizon_seconds: если > 0, счётчик horizon автоматически сбрасывается
+    по истечении указанного интервала. 0.0 (по умолчанию) — без сброса.
     """
 
     def __init__(
@@ -37,11 +40,13 @@ class CostBreaker:
         per_task: Budget,
         per_session: Budget,
         per_horizon: Budget,
+        horizon_seconds: float = 0.0,
     ) -> None:
         self._inner = _RustCostBreaker(
             per_task.to_rust(),
             per_session.to_rust(),
             per_horizon.to_rust(),
+            horizon_seconds,
         )
 
     def charge(self, tokens: int) -> CostState:

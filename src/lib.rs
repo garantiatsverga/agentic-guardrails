@@ -37,12 +37,19 @@ struct CostBreaker {
 #[pymethods]
 impl CostBreaker {
     #[new]
-    fn new(per_task: Budget, per_session: Budget, per_horizon: Budget) -> Self {
+    #[pyo3(signature = (per_task, per_session, per_horizon, horizon_seconds = 0.0))]
+    fn new(
+        per_task: Budget,
+        per_session: Budget,
+        per_horizon: Budget,
+        horizon_seconds: f64,
+    ) -> Self {
         Self {
             inner: RustCostBreaker::new(
                 per_task.inner,
                 per_session.inner,
                 per_horizon.inner,
+                horizon_seconds,
             ),
         }
     }
