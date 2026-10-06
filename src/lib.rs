@@ -3,6 +3,7 @@
 use pyo3::prelude::*;
 
 use cost_cb::{Budget as RustBudget, CostBreaker as RustCostBreaker};
+use failure_cb::{FailureBreaker as RustFailureBreaker};
 
 #[pyclass]
 #[derive(Clone)]
@@ -88,9 +89,61 @@ impl CostBreaker {
     }
 }
 
+#[pyclass]
+struct FailureBreaker {
+    inner: RustFailureBreaker,
+}
+
+#[pymethods]
+impl FailureBreaker {
+    #[new]
+    #[pyo3(signature = (failure_threshold = 5, recovery_timeout = 30.0, half_open_probes = 1))]
+    fn new(
+        failure_threshold: u32,
+        recovery_timeout: f64,
+        half_open_probes: u32,
+    ) -> Self {
+        Self {
+            inner: RustFailureBreaker::new(
+                failure_threshold,
+                recovery_timeout,
+                half_open_probes,
+            ),
+        }
+    }
+
+    /// Возвращает "closed" | "open" | "half_open".
+    fn state(&self) -> &'static str {
+        self.inner.state().as_str()
+    }
+
+    fn allow(&self) -> bool {
+        self.inner.allow()
+    }
+
+    fn on_success(&self) {
+        self.inner.on_success();
+    }
+
+    fn on_failure(&self) {
+        self.inner.on_failure();
+    }
+
+    #[getter]
+    fn failures(&self) -> u32 {
+        self.inner.failures()
+    }
+
+    #[getter]
+    fn probes_count(&self) -> u32 {
+        self.inner.probes_count()
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Budget>()?;
     m.add_class::<CostBreaker>()?;
+    m.add_class::<FailureBreaker>()?;
     Ok(())
 }

@@ -7,6 +7,7 @@ name = "agentic_guardrails_core"
 version = "0.1.0"
 dependencies = [
  "cost_cb",
+ "failure_cb",
  "pyo3",
 ]
 
@@ -24,6 +25,13 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "cost_cb"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+]
+
+[[package]]
+name = "failure_cb"
 version = "0.1.0"
 dependencies = [
  "pyo3",

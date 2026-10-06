@@ -1,11 +1,11 @@
-"""Failure Circuit Breaker — защита от каскадных сбоев внешних вызовов.
+"""Failure Circuit Breaker — тонкая обёртка над Rust-ядром.
 
-CLOSED -> OPEN -> HALF_OPEN -> CLOSED
+API 1:1 с прежней Python-версией. Пользователь не знает, что под капотом Rust.
 """
 from __future__ import annotations
-from dataclasses import dataclass
 from enum import Enum
-from time import monotonic
+
+from ._core import FailureBreaker as _RustFailureBreaker
 
 
 class CBState(str, Enum):
@@ -14,41 +14,45 @@ class CBState(str, Enum):
     HALF_OPEN = "half_open"
 
 
-@dataclass
 class FailureBreaker:
-    failure_threshold: int = 5
-    recovery_timeout: float = 30.0
-    half_open_probes: int = 1
+    """Потокобезопасный Failure Circuit Breaker.
 
-    _state: CBState = CBState.CLOSED
-    _failures: int = 0
-    _opened_at: float = 0.0
-    _probes: int = 0
+    State machine: CLOSED -> OPEN -> HALF_OPEN -> CLOSED.
+    Гонки исключены на уровне Rust (AtomicU8 + AtomicU32).
+
+    Особенность: сбой в HALF_OPEN немедленно возвращает в OPEN,
+    минуя ожидание failure_threshold (probe провален).
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+        half_open_probes: int = 1,
+    ) -> None:
+        self._inner = _RustFailureBreaker(
+            failure_threshold,
+            recovery_timeout,
+            half_open_probes,
+        )
 
     @property
     def state(self) -> CBState:
-        if self._state is CBState.OPEN and \
-           monotonic() - self._opened_at >= self.recovery_timeout:
-            self._state = CBState.HALF_OPEN
-            self._probes = 0
-        return self._state
+        return CBState(self._inner.state())
 
     def allow(self) -> bool:
-        s = self.state
-        if s is CBState.CLOSED:
-            return True
-        if s is CBState.HALF_OPEN and self._probes < self.half_open_probes:
-            self._probes += 1
-            return True
-        return False
+        return self._inner.allow()
 
     def on_success(self) -> None:
-        self._failures = 0
-        self._state = CBState.CLOSED
-        self._probes = 0
+        self._inner.on_success()
 
     def on_failure(self) -> None:
-        self._failures += 1
-        if self._failures >= self.failure_threshold:
-            self._state = CBState.OPEN
-            self._opened_at = monotonic()
+        self._inner.on_failure()
+
+    @property
+    def failures(self) -> int:
+        return self._inner.failures
+
+    @property
+    def probes_count(self) -> int:
+        return self._inner.probes_count

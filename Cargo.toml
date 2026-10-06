@@ -1,18 +1,19 @@
-[package]                          # ← корень теперь тоже пакет
+[package]
 name = "agentic_guardrails_core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [lib]
-name = "_core"                     # ← имя Python-модуля
-crate-type = ["cdylib"]            # ← только cdylib, rlib не нужен
-path = "src/lib.rs"                # ← фасад
+name = "_core"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"] }
-cost_cb = { path = "crates/cost_cb" }   # ← линкуем crate
+cost_cb = { path = "crates/cost_cb" }
+failure_cb = { path = "crates/failure_cb" }
 
-[workspace]                        # ← workspace остаётся
-members = ["crates/cost_cb"]
+[workspace]
+members = ["crates/cost_cb", "crates/failure_cb"]
 resolver = "2"
