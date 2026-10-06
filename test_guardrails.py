@@ -107,6 +107,54 @@ class TestCostBreaker:
         cb.reset_task()
         assert cb.charge(100) is CostState.OK  # task сброшен, session ещё ок
 
+    def test_batch_equals_sequential(self):
+        """charge_batch([a, b, c]) эквивалентен charge(a); charge(b); charge(c)."""
+        cb1 = CostBreaker(
+            per_task=Budget(limit=1000),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+        cb2 = CostBreaker(
+            per_task=Budget(limit=1000),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+
+        tokens = [100, 200, 300, 400]
+        last_sequential = None
+        for t in tokens:
+            last_sequential = cb1.charge(t)
+        last_batch = cb2.charge_batch(tokens)
+
+        assert last_batch == last_sequential
+        assert cb1.task_used == cb2.task_used
+        assert cb1.session_used == cb2.session_used
+        assert cb1.horizon_used == cb2.horizon_used
+
+    def test_batch_empty(self):
+        cb = CostBreaker(
+            per_task=Budget(limit=1000),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+        assert cb.charge_batch([]) == CostState.OK
+
+    def test_batch_crosses_soft(self):
+        cb = CostBreaker(
+            per_task=Budget(limit=1000, soft_ratio=0.7),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+        assert cb.charge_batch([300, 300, 300]) == CostState.SOFT
+
+    def test_batch_crosses_hard(self):
+        cb = CostBreaker(
+            per_task=Budget(limit=1000),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+        assert cb.charge_batch([500, 500, 500]) == CostState.HARD
+
     def test_horizon_rolls_over(self):
         cb = CostBreaker(
             per_task=Budget(limit=10**9),

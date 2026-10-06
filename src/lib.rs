@@ -59,6 +59,11 @@ impl CostBreaker {
         self.inner.charge(tokens).as_str()
     }
 
+    /// Списывает батч токенов, возвращает итоговое состояние.
+    fn charge_batch(&self, tokens_list: Vec<u64>) -> &'static str {
+        self.inner.charge_batch(&tokens_list).as_str()
+    }
+
     fn reset_task(&self) {
         self.inner.reset_task();
     }

@@ -114,6 +114,18 @@ impl CostBreaker {
         }
     }
 
+    /// Списывает токены батчем, возвращает итоговое состояние.
+    ///
+    /// Эквивалент N вызовов charge(t) с тем же результатом в конце,
+    /// но с одним переходом Python<->Rust вместо N.
+    pub fn charge_batch(&self, tokens_list: &[u64]) -> CostState {
+        let mut last = CostState::Ok;
+        for &tokens in tokens_list {
+            last = self.charge(tokens);
+        }
+        last
+    }
+
     pub fn reset_task(&self) {
         self.task_used.store(0, Ordering::Relaxed);
     }
@@ -188,6 +200,35 @@ mod tests {
         cb.reset_session();
         assert_eq!(cb.task_used(), 0);
         assert_eq!(cb.session_used(), 0);
+    }
+
+    #[test]
+    fn batch_equals_sequential() {
+        let cb1 = breaker(1000, 10_000, 100_000);
+        let cb2 = breaker(1000, 10_000, 100_000);
+
+        let tokens = vec![100u64, 200, 300, 400];
+        for &t in &tokens {
+            cb1.charge(t);
+        }
+        let _ = cb2.charge_batch(&tokens);
+
+        assert_eq!(cb1.task_used(), cb2.task_used());
+        assert_eq!(cb1.session_used(), cb2.session_used());
+        assert_eq!(cb1.horizon_used(), cb2.horizon_used());
+    }
+
+    #[test]
+    fn batch_empty_returns_ok() {
+        let cb = breaker(1000, 10_000, 100_000);
+        assert_eq!(cb.charge_batch(&[]), CostState::Ok);
+    }
+
+    #[test]
+    fn batch_hard_state_persists() {
+        let cb = breaker(1000, 10_000, 100_000);
+        let state = cb.charge_batch(&[500, 500, 500]);
+        assert_eq!(state, CostState::Hard);
     }
 
     #[test]

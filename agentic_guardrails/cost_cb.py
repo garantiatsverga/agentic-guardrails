@@ -52,6 +52,13 @@ class CostBreaker:
     def charge(self, tokens: int) -> CostState:
         return CostState(self._inner.charge(tokens))
 
+    def charge_batch(self, tokens_list: list[int]) -> CostState:
+        """Списывает батч токенов, возвращает итоговое состояние.
+
+        Эквивалент N вызовов charge(t), но с одним переходом Python<->Rust.
+        """
+        return CostState(self._inner.charge_batch(tokens_list))
+
     def reset_task(self) -> None:
         self._inner.reset_task()
 
