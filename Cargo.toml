@@ -13,7 +13,10 @@ path = "src/lib.rs"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 cost_cb = { path = "crates/cost_cb" }
 failure_cb = { path = "crates/failure_cb" }
+audit = { path = "crates/audit" }
+pythonize = "0.22"
+serde_json = "1"
 
 [workspace]
-members = ["crates/cost_cb", "crates/failure_cb"]
+members = ["crates/cost_cb", "crates/failure_cb", "crates/audit"]
 resolver = "2"

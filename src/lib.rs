@@ -4,6 +4,8 @@ use pyo3::prelude::*;
 
 use cost_cb::{Budget as RustBudget, CostBreaker as RustCostBreaker};
 use failure_cb::{FailureBreaker as RustFailureBreaker};
+use audit::{AuditChain as RustAuditChain, AuditEntry as RustAuditEntry};
+use serde_json::Value;
 
 #[pyclass]
 #[derive(Clone)]
@@ -140,10 +142,96 @@ impl FailureBreaker {
     }
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct AuditEntry {
+    inner: RustAuditEntry,
+}
+
+#[pymethods]
+impl AuditEntry {
+    #[getter]
+    fn seq(&self) -> u64 {
+        self.inner.seq
+    }
+
+    #[getter]
+    fn prev_hash(&self) -> String {
+        self.inner.prev_hash.clone()
+    }
+
+    /// Unix millis. Python-обёртка конвертирует в ISO.
+    #[getter]
+    fn timestamp(&self) -> u64 {
+        self.inner.timestamp
+    }
+
+    #[getter]
+    fn event(&self) -> String {
+        self.inner.event.clone()
+    }
+
+    /// payload как НОВЫЙ Python-объект (через JSON-строку).
+    /// Мутация результата не влияет на Rust-структуру.
+    fn payload<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let json_str = serde_json::to_string(&self.inner.payload)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let json_mod = py.import_bound("json")?;
+        json_mod.call_method1("loads", (json_str,))
+    }
+
+    #[getter]
+    fn entry_hash(&self) -> String {
+        self.inner.entry_hash.clone()
+    }
+}
+
+#[pyclass]
+struct AuditChain {
+    inner: RustAuditChain,
+}
+
+#[pymethods]
+impl AuditChain {
+    #[new]
+    fn new() -> Self {
+        Self { inner: RustAuditChain::new() }
+    }
+
+    fn append(
+        &mut self,
+        event: String,
+        payload: Bound<'_, PyAny>,
+    ) -> PyResult<AuditEntry> {
+        let value: Value = pythonize::depythonize(&payload)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let entry = self.inner.append(event, value);
+        Ok(AuditEntry { inner: entry })
+    }
+
+    fn verify(&self) -> bool {
+        self.inner.verify()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn entries(&self) -> Vec<AuditEntry> {
+        self.inner
+            .entries()
+            .iter()
+            .map(|e| AuditEntry { inner: e.clone() })
+            .collect()
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Budget>()?;
     m.add_class::<CostBreaker>()?;
     m.add_class::<FailureBreaker>()?;
+    m.add_class::<AuditEntry>()?;
+    m.add_class::<AuditChain>()?;
     Ok(())
 }

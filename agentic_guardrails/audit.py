@@ -1,58 +1,85 @@
-"""Append-only Audit Chain — неизменяемый лог с hash-chain.
+"""Append-only Audit Chain с hash-chain — обёртка над Rust-ядром.
 
-Каждая запись содержит хеш предыдущей -> tamper-evident.
+API 1:1 с прежней Python-версией. timestamp снаружи — ISO-строка,
+внутри Rust — Unix millis (u64).
 """
 from __future__ import annotations
-from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from hashlib import sha256
 from typing import Any
-import json
+
+from ._core import AuditChain as _RustAuditChain
+from ._core import AuditEntry as _RustAuditEntry
 
 
-@dataclass
 class AuditEntry:
-    seq: int
-    prev_hash: str
-    timestamp: str
-    event: str
-    payload: dict[str, Any]
-    entry_hash: str = ""
+    """Обёртка над Rust AuditEntry. timestamp конвертируется в ISO."""
 
-    def compute_hash(self) -> str:
-        body = json.dumps(
-            {k: v for k, v in asdict(self).items() if k != "entry_hash"},
-            sort_keys=True, ensure_ascii=False,
+    def __init__(self, inner: _RustAuditEntry) -> None:
+        self._inner = inner
+
+    @property
+    def seq(self) -> int:
+        return self._inner.seq
+
+    @property
+    def prev_hash(self) -> str:
+        return self._inner.prev_hash
+
+    @property
+    def timestamp(self) -> str:
+        """ISO 8601 (UTC) из Unix millis."""
+        dt = datetime.fromtimestamp(self._inner.timestamp / 1000, tz=timezone.utc)
+        return dt.isoformat()
+
+    @property
+    def timestamp_millis(self) -> int:
+        """Unix millis (raw)."""
+        return self._inner.timestamp
+
+    @property
+    def event(self) -> str:
+        return self._inner.event
+
+    @property
+    def payload(self) -> Any:
+        """НОВЫЙ объект. Мутация не влияет на Rust-структуру."""
+        return self._inner.payload()
+
+    @property
+    def entry_hash(self) -> str:
+        return self._inner.entry_hash
+
+    def __repr__(self) -> str:
+        return (
+            f"AuditEntry(seq={self.seq}, event={self.event!r}, "
+            f"timestamp={self.timestamp!r})"
         )
-        return sha256(body.encode()).hexdigest()
 
 
 class AuditChain:
-    def __init__(self) -> None:
-        self._entries: list[AuditEntry] = []
-        self._last_hash = "0" * 64
+    """Append-only цепочка с hash-chain.
 
-    def append(self, event: str, payload: dict[str, Any]) -> AuditEntry:
-        entry = AuditEntry(
-            seq=len(self._entries) + 1,
-            prev_hash=self._last_hash,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            event=event,
-            payload=payload,
-        )
-        entry.entry_hash = entry.compute_hash()
-        self._last_hash = entry.entry_hash
-        self._entries.append(entry)
-        return entry
+    Каждая запись содержит sha256 от {seq, prev_hash, timestamp, event, payload}.
+    Изменение любой записи ломает verify().
+    """
+
+    def __init__(self) -> None:
+        self._inner = _RustAuditChain()
+
+    def append(self, event: str, payload: Any) -> AuditEntry:
+        """Добавляет запись. payload — dict или любой JSON-сериализуемый объект."""
+        return AuditEntry(self._inner.append(event, payload))
 
     def verify(self) -> bool:
-        prev = "0" * 64
-        for e in self._entries:
-            if e.prev_hash != prev or e.compute_hash() != e.entry_hash:
-                return False
-            prev = e.entry_hash
-        return True
+        """Проверяет целостность всей цепочки."""
+        return self._inner.verify()
 
     @property
     def entries(self) -> list[AuditEntry]:
-        return list(self._entries)
+        return [AuditEntry(e) for e in self._inner.entries()]
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    def __repr__(self) -> str:
+        return f"AuditChain(len={len(self)})"

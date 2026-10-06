@@ -256,13 +256,19 @@ class TestAuditChain:
         assert len(chain.entries) == 2
         assert chain.entries[1].prev_hash == chain.entries[0].entry_hash
 
-    def test_tampering_detected(self):
+    def test_payload_is_copy_not_reference(self):
+        """Мутация payload в Python не влияет на Rust-цепочку."""
         chain = AuditChain()
         chain.append("evt1", {"a": 1})
         chain.append("evt2", {"b": 2})
-        # портим payload
+        assert chain.verify() is True
+
+        # Мутируем через property
         chain.entries[0].payload["a"] = 999
-        assert chain.verify() is False
+
+        # Rust не изменился
+        assert chain.entries[0].payload == {"a": 1}
+        assert chain.verify() is True
 
 
 class TestSaga:
