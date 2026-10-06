@@ -1,5 +1,21 @@
+[build-system]
+requires = ["maturin>=1.3,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "agentic-guardrails"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Universal guardrails for AI agents: policy, cost CB, failure CB, audit, saga"
+
+[tool.maturin]
+module-name = "agentic_guardrails._core"
+manifest-path = "Cargo.toml"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
 markers = [
     "integration: integration tests",
     "e2e: end-to-end tests",

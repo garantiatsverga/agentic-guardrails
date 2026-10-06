@@ -1,0 +1,48 @@
+# ===== Rust =====
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock НЕ игнорируем: это workspace с bin-подобной сборкой через maturin.
+# Для чистой библиотеки — игнорировали бы, здесь — коммитим.
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ===== Virtualenv =====
+.venv/
+venv/
+ENV/
+env/
+
+# ===== pytest =====
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ===== maturin =====
+wheels/
+*.whl
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
