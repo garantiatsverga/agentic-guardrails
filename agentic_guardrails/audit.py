@@ -69,14 +69,30 @@ class AuditChain:
     def append(self, event: str, payload: Any) -> AuditEntry:
         """Добавляет запись.
 
-        payload — любой JSON-сериализуемый объект (dict, list, str, int,
-        float, bool, None). Числа должны укладываться в диапазон i64
-        (-2^63 .. 2^63-1) или float64 — как в большинстве JSON-парсеров.
+        payload — любой JSON-сериализуемый объект. Числа — в пределах
+        i64 (-2^63 .. 2^63-1) или float64. Большие числа передавайте
+        строками.
 
         Бросает ValueError, если payload не сериализуется.
         """
         _validate_payload(payload)
         return AuditEntry(self._inner.append(event, payload))
+
+    def append_batch(
+        self,
+        events: list[tuple[str, Any]],
+    ) -> list[AuditEntry]:
+        """Добавляет пачку записей за один вызов.
+
+        Эквивалент N × append, но с одним переходом Python<->Rust.
+        Валидация — быстрая (только int на верхнем уровне dict).
+        Если один payload невалиден — вся пачка отклоняется.
+
+        Возвращает список AuditEntry в порядке входа.
+        """
+        for _, payload in events:
+            _validate_payload(payload)
+        return [AuditEntry(e) for e in self._inner.append_batch(events)]
 
     def verify(self) -> bool:
         return self._inner.verify()
@@ -99,9 +115,6 @@ def _validate_payload(payload: Any) -> None:
     - int вне диапазона i64 -> ValueError
     - не-str ключ в dict -> ValueError
     - общая JSON-сериализуемость -> ValueError
-
-    serde_json принимает только i64/f64 и HashMap<String, Value>,
-    а Python int безграничен, а dict допускает не-str ключи.
     """
     import json
 

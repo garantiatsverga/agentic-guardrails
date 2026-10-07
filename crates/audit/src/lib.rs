@@ -78,6 +78,17 @@ impl AuditChain {
         entry
     }
 
+    /// Добавляет пачку записей за один вызов.
+    ///
+    /// Эквивалент N × append, но с одним переходом Python<->Rust.
+    /// Возвращает список добавленных записей в порядке входа.
+    pub fn append_batch(&mut self, events: Vec<(String, Value)>) -> Vec<AuditEntry> {
+        events
+            .into_iter()
+            .map(|(event, payload)| self.append(event, payload))
+            .collect()
+    }
+
     pub fn verify(&self) -> bool {
         let mut prev = GENESIS_HASH.to_string();
         for e in &self.entries {
@@ -155,6 +166,49 @@ mod tests {
         assert!(chain.verify());
         chain.tamper(0);
         assert!(!chain.verify());
+    }
+
+    #[test]
+    fn batch_equals_sequential() {
+        // Внимание: entry_hash зависит от timestamp, а timestamp
+        // генерируется на каждый append отдельно -> хеши в двух
+        // цепочках различаются. Сравниваем структуру (seq, event, payload),
+        // а не хеши.
+        let mut chain1 = AuditChain::new();
+        let mut chain2 = AuditChain::new();
+
+        let events = vec![
+            ("e1".to_string(), serde_json::json!({"a": 1})),
+            ("e2".to_string(), serde_json::json!({"b": 2})),
+            ("e3".to_string(), serde_json::json!({"c": 3})),
+        ];
+
+        for (e, p) in events.clone() {
+            chain1.append(e, p);
+        }
+        let batch_result = chain2.append_batch(events);
+
+        assert_eq!(chain1.len(), chain2.len());
+        assert_eq!(batch_result.len(), 3);
+
+        // Структурная эквивалентность
+        for i in 0..chain1.len() {
+            assert_eq!(chain1.entries()[i].seq, chain2.entries()[i].seq);
+            assert_eq!(chain1.entries()[i].event, chain2.entries()[i].event);
+            assert_eq!(chain1.entries()[i].payload, chain2.entries()[i].payload);
+        }
+
+        assert!(chain1.verify());
+        assert!(chain2.verify());
+    }
+
+    #[test]
+    fn batch_empty() {
+        let mut chain = AuditChain::new();
+        let result = chain.append_batch(vec![]);
+        assert!(result.is_empty());
+        assert_eq!(chain.len(), 0);
+        assert!(chain.verify());
     }
 
     #[test]

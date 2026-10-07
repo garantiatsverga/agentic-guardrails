@@ -5,14 +5,18 @@
 # Что делает:
 #   1. Проверяет окружение (python3, cargo, rustc)
 #   2. Создаёт .venv (если нет) и активирует
-#   3. Ставит Python-зависимости (maturin, pytest, pytest-asyncio)
+#   3. Ставит Python-зависимости (maturin, pytest, pytest-asyncio, pytest-cov, hypothesis)
 #   4. Собирает Rust-ядро через maturin develop --release
-#   5. Прогоняет Rust-тесты (cargo test)
+#   5. Прогоняет Rust-тесты (cargo test --workspace)
 #   6. Прогоняет Python-тесты (pytest)
+#   7. Прогоняет smoke test (examples/demo.py)
+#   8. Показывает покрытие (pytest --cov)
 #
 # Использование:
-#   ./build.sh              # полная сборка + тесты
-#   ./build.sh --no-test    # только сборка, без тестов
+#   ./build.sh              # полная сборка + тесты + покрытие + demo
+#   ./build.sh --no-test    # только сборка
+#   ./build.sh --no-demo    # без smoke-теста
+#   ./build.sh --no-cov     # без покрытия
 #   ./build.sh --clean      # снести target/ и .venv/, собрать с нуля
 #   ./build.sh --fast       # debug-сборка (быстрее, но медленнее runtime)
 #
@@ -25,6 +29,25 @@ PYTHON_MIN_MAJOR=3
 PYTHON_MIN_MINOR=10
 RUST_MIN_MAJOR=1
 RUST_MIN_MINOR=63
+
+# Все Python-зависимости для разработки и тестов
+PY_DEPS=(
+    "maturin"
+    "pytest"
+    "pytest-asyncio"
+    "pytest-cov"
+    "hypothesis"
+)
+
+# Файлы Python-тестов (явно, без автопоиска — чтобы CI был предсказуем)
+PY_TEST_FILES=(
+    "test_guardrails.py"
+    "test_retry_policy.py"
+    "test_rate_limiter.py"
+    "test_parallel_runner.py"
+)
+
+PY_PROPERTY_TEST="test_properties.py"
 
 # ==== Цвета ====
 if [[ -t 1 ]]; then
@@ -42,15 +65,19 @@ header(){ echo -e "\n${BOLD}=== $* ===${NC}"; }
 
 # ==== Парсинг аргументов ====
 NO_TEST=0
+NO_DEMO=0
+NO_COV=0
 CLEAN=0
 FAST=0
 for arg in "$@"; do
     case "$arg" in
         --no-test) NO_TEST=1 ;;
+        --no-demo) NO_DEMO=1 ;;
+        --no-cov)  NO_COV=1 ;;
         --clean)   CLEAN=1 ;;
         --fast)    FAST=1 ;;
         -h|--help)
-            sed -n '3,15p' "$0" | sed 's/^# \?//'
+            sed -n '3,22p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *) fail "Неизвестный аргумент: $arg (см. --help)" ;;
@@ -115,9 +142,12 @@ ok "venv активирован: $(which python)"
 header "Установка Python-зависимостей"
 
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet maturin pytest pytest-asyncio
-ok "maturin $(maturin --version | awk '{print $2}')"
-ok "pytest $(pytest --version | head -1 | awk '{print $2}')"
+python -m pip install --quiet "${PY_DEPS[@]}"
+
+for dep in "${PY_DEPS[@]}"; do
+    ver=$(python -m pip show "$dep" 2>/dev/null | awk '/^Version:/ {print $2}')
+    ok "${dep} ${ver}"
+done
 
 # ==== Шаг 4: сборка Rust ====
 header "Сборка Rust-ядра"
@@ -142,11 +172,48 @@ if [[ "$NO_TEST" -eq 0 ]]; then
 
     # ==== Шаг 6: Python-тесты ====
     header "Python-тесты"
-    if [[ -f "${PROJECT_ROOT}/test_guardrails.py" ]]; then
-        pytest -q "${PROJECT_ROOT}/test_guardrails.py" || fail "Python-тесты провалились"
-        ok "Python-тесты прошли"
+
+    existing_tests=()
+    for f in "${PY_TEST_FILES[@]}"; do
+        if [[ -f "${PROJECT_ROOT}/${f}" ]]; then
+            existing_tests+=("$f")
+        else
+            warn "Пропускаю отсутствующий ${f}"
+        fi
+    done
+
+    if [[ ${#existing_tests[@]} -eq 0 ]]; then
+        warn "Не найдено ни одного тестового файла — пропускаю"
     else
-        warn "test_guardrails.py не найден, пропускаю"
+        pytest -q "${existing_tests[@]}" || fail "Основные тесты провалились"
+        ok "Основные тесты прошли"
+    fi
+
+    # Property-based тесты отдельно
+    if [[ -f "${PROJECT_ROOT}/${PY_PROPERTY_TEST}" ]]; then
+        log "Property-based тесты (${PY_PROPERTY_TEST})..."
+        pytest -q "${PY_PROPERTY_TEST}" || fail "Property-based тесты провалились"
+        ok "Property-based тесты прошли"
+    fi
+fi
+
+# ==== Шаг 7: покрытие ====
+if [[ "$NO_TEST" -eq 0 && "$NO_COV" -eq 0 ]]; then
+    header "Покрытие"
+    if [[ ${#existing_tests[@]} -gt 0 ]]; then
+        pytest --quiet --cov=agentic_guardrails --cov-report=term-missing \
+            "${existing_tests[@]}" 2>&1 | tail -20
+    fi
+fi
+
+# ==== Шаг 8: smoke test ====
+if [[ "$NO_TEST" -eq 0 && "$NO_DEMO" -eq 0 ]]; then
+    header "Smoke test (examples/demo.py)"
+    if [[ -f "${PROJECT_ROOT}/examples/demo.py" ]]; then
+        python "${PROJECT_ROOT}/examples/demo.py" || fail "Smoke test провалился"
+        ok "Все модули работают"
+    else
+        warn "examples/demo.py не найден — пропускаю"
     fi
 fi
 
@@ -158,5 +225,6 @@ echo "  Активировать окружение:  source .venv/bin/activate"
 echo "  Пересобрать:             ./build.sh"
 echo "  Быстрая сборка:          ./build.sh --fast"
 echo "  С нуля:                  ./build.sh --clean"
+echo "  Без покрытия:            ./build.sh --no-cov"
+echo "  Без demo:                ./build.sh --no-demo"
 echo ""
-

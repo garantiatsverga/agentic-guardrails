@@ -209,6 +209,29 @@ impl AuditChain {
         Ok(AuditEntry { inner: entry })
     }
 
+    /// Добавляет пачку записей за один вызов.
+    ///
+    /// events: список кортежей (event, payload).
+    /// Возвращает список AuditEntry в порядке входа.
+    fn append_batch(
+        &mut self,
+        events: Vec<(String, Bound<'_, PyAny>)>,
+    ) -> PyResult<Vec<AuditEntry>> {
+        // Конвертируем все payload'ы заранее — если один невалиден,
+        // падаем ДО изменения состояния цепочки.
+        let mut converted: Vec<(String, Value)> = Vec::with_capacity(events.len());
+        for (event, payload) in events {
+            let value: Value = pythonize::depythonize(&payload)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            converted.push((event, value));
+        }
+        Ok(self.inner
+            .append_batch(converted)
+            .into_iter()
+            .map(|e| AuditEntry { inner: e })
+            .collect())
+    }
+
     fn verify(&self) -> bool {
         self.inner.verify()
     }
