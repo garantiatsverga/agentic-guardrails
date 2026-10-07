@@ -1,6 +1,6 @@
 """Append-only Audit Chain с hash-chain — обёртка над Rust-ядром.
 
-API 1:1 с прежней Python-версией. timestamp снаружи — ISO-строка,
+API 1:1 с прежней версией. timestamp снаружи — ISO-строка,
 внутри Rust — Unix millis (u64).
 """
 from __future__ import annotations
@@ -67,11 +67,18 @@ class AuditChain:
         self._inner = _RustAuditChain()
 
     def append(self, event: str, payload: Any) -> AuditEntry:
-        """Добавляет запись. payload — dict или любой JSON-сериализуемый объект."""
+        """Добавляет запись.
+
+        payload — любой JSON-сериализуемый объект (dict, list, str, int,
+        float, bool, None). Числа должны укладываться в диапазон i64
+        (-2^63 .. 2^63-1) или float64 — как в большинстве JSON-парсеров.
+
+        Бросает ValueError, если payload не сериализуется.
+        """
+        _validate_payload(payload)
         return AuditEntry(self._inner.append(event, payload))
 
     def verify(self) -> bool:
-        """Проверяет целостность всей цепочки."""
         return self._inner.verify()
 
     @property
@@ -83,3 +90,43 @@ class AuditChain:
 
     def __repr__(self) -> str:
         return f"AuditChain(len={len(self)})"
+
+
+def _validate_payload(payload: Any) -> None:
+    """Проверяет JSON-совместимость payload до передачи в Rust.
+
+    Проверки:
+    - int вне диапазона i64 -> ValueError
+    - не-str ключ в dict -> ValueError
+    - общая JSON-сериализуемость -> ValueError
+
+    serde_json принимает только i64/f64 и HashMap<String, Value>,
+    а Python int безграничен, а dict допускает не-str ключи.
+    """
+    import json
+
+    def check(node: Any, path: str = "$") -> None:
+        if isinstance(node, bool):
+            return
+        if isinstance(node, int) and not (-2**63 <= node < 2**63):
+            raise ValueError(
+                f"integer out of i64 range at {path}: {node}. "
+                f"Consider using str for large identifiers."
+            )
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if not isinstance(k, str):
+                    raise ValueError(
+                        f"payload key must be str at {path}: {k!r}"
+                    )
+                check(v, f"{path}.{k}")
+        elif isinstance(node, (list, tuple)):
+            for i, v in enumerate(node):
+                check(v, f"{path}[{i}]")
+
+    check(payload)
+
+    try:
+        json.dumps(payload)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"payload not JSON-serializable: {e}") from e

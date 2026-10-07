@@ -479,6 +479,43 @@ class TestAuditChain:
         assert len(e.entry_hash) == 64
         assert e.prev_hash == "0" * 64
 
+    def test_validate_rejects_big_int(self):
+        chain = AuditChain()
+        with pytest.raises(ValueError, match="i64 range"):
+            chain.append("evt", {"value": 2**70})
+
+    def test_validate_rejects_negative_big_int(self):
+        chain = AuditChain()
+        with pytest.raises(ValueError, match="i64 range"):
+            chain.append("evt", {"value": -2**63 - 1})
+
+    def test_validate_accepts_boundary_i64(self):
+        chain = AuditChain()
+        chain.append("evt1", {"value": 2**63 - 1})
+        chain.append("evt2", {"value": -2**63})
+        assert chain.verify() is True
+
+    def test_validate_accepts_bool(self):
+        """bool — валидный JSON, не попадает в int-проверку."""
+        chain = AuditChain()
+        chain.append("evt", {"flag": True, "disabled": False})
+        assert chain.verify() is True
+
+    def test_validate_rejects_non_str_key(self):
+        chain = AuditChain()
+        with pytest.raises(ValueError, match="key must be str"):
+            chain.append("evt", {42: "value"})
+
+    def test_validate_rejects_unsupported_type(self):
+        chain = AuditChain()
+        with pytest.raises(ValueError, match="not JSON-serializable"):
+            chain.append("evt", {"value": object()})
+
+    def test_validate_walks_nested(self):
+        chain = AuditChain()
+        with pytest.raises(ValueError, match="i64 range"):
+            chain.append("evt", {"nested": {"deep": [1, 2, 2**70]}})
+
     def test_repr(self):
         """__repr__ не падает и содержит ключевую информацию."""
         chain = AuditChain()

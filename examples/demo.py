@@ -21,6 +21,7 @@ from agentic_guardrails.audit import AuditChain
 from agentic_guardrails.policy_hook_bus import HookBus, PolicyResult, Decision
 from agentic_guardrails.hitl import AutonomyLadder, RLevel
 from agentic_guardrails.saga import SagaStep, run_saga
+from agentic_guardrails.retry_policy import RetryPolicy, FixedBackoff
 
 
 def check(name: str, condition: bool) -> None:
@@ -136,6 +137,43 @@ async def test_saga() -> None:
     check("no compensation errors", r2.compensation_errors == [])
 
 
+async def test_retry_policy() -> None:
+    print("[retry_policy]")
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("fail")
+        return "ok"
+
+    policy = RetryPolicy(
+        max_attempts=5,
+        backoff=FixedBackoff(interval=0.001),
+        retry_on=(ConnectionError,),
+    )
+    result = await policy.execute(flaky)
+    check("retry until success", result == "ok")
+    check("called 3 times", len(calls) == 3)
+
+    calls2 = []
+
+    async def bad():
+        calls2.append(1)
+        raise ValueError("bad input")
+
+    policy2 = RetryPolicy(
+        max_attempts=5,
+        backoff=FixedBackoff(interval=0.001),
+        give_up_on=(ValueError,),
+    )
+    try:
+        await policy2.execute(bad)
+    except ValueError:
+        pass
+    check("give_up_on stops retry", len(calls2) == 1)
+
+
 def test_hitl() -> None:
     print("[hitl]")
     ladder = AutonomyLadder(nominal=RLevel.R5)
@@ -166,6 +204,8 @@ async def main() -> int:
     await test_saga()
     print()
     test_hitl()
+    print()
+    await test_retry_policy()
 
     print()
     print("=" * 50)
