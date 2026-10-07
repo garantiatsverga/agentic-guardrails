@@ -117,12 +117,6 @@ async def run_with_approval(
 
     try:
         if ladder.approval_timeout > 0:
-            return await asyncio.wait_for(
-                approve(request),
-                timeout=ladder.approval_timeout,
-            )
+            return await asyncio.wait_for(approve(request), timeout=ladder.approval_timeout)
         return await approve(request)
-    except asyncio.TimeoutError:
-        return False
-    except Exception:
-        return False
+    except Exception: return False  # Fail-safe: любая ошибка -> DENY

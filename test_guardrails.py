@@ -113,6 +113,19 @@ class TestPolicyHookBus:
         result = await bus.check("action", {})
         assert result.decision is Decision.ALLOW
 
+    async def test_timeout_disabled_by_zero(self):
+        """timeout_per_policy <= 0 отключает таймаут."""
+        import asyncio
+        bus = HookBus(timeout_per_policy=0)
+
+        async def slow(action, ctx):
+            await asyncio.sleep(0.05)
+            return PolicyResult(Decision.ALLOW)
+
+        bus.register("slow", slow)
+        result = await bus.check("action", {})
+        assert result.decision is Decision.ALLOW
+
     async def test_timeout_does_not_stop_other_policies(self):
         """Зависшее правило не блокирует следующие (порядок и приоритет)."""
         import asyncio
@@ -221,6 +234,19 @@ class TestCostBreaker:
         )
         assert cb.charge_batch([500, 500, 500]) == CostState.HARD
 
+    def test_reset_session_clears_task_and_session(self):
+        cb = CostBreaker(
+            per_task=Budget(limit=1000),
+            per_session=Budget(limit=10_000),
+            per_horizon=Budget(limit=100_000),
+        )
+        cb.charge(500)
+        assert cb.task_used == 500
+        assert cb.session_used == 500
+        cb.reset_session()
+        assert cb.task_used == 0
+        assert cb.session_used == 0
+
     def test_horizon_rolls_over(self):
         cb = CostBreaker(
             per_task=Budget(limit=10**9),
@@ -261,6 +287,15 @@ class TestFailureBreaker:
         cb.allow()  # probe
         cb.on_success()
         assert cb.state is CBState.CLOSED
+
+    def test_failures_and_probes_count_properties(self):
+        cb = FailureBreaker(failure_threshold=3, recovery_timeout=10.0)
+        assert cb.failures == 0
+        assert cb.probes_count == 0
+        cb.on_failure()
+        assert cb.failures == 1
+        cb.on_failure()
+        assert cb.failures == 2
 
     def test_failure_in_half_open_reopens(self):
         cb = FailureBreaker(failure_threshold=2, recovery_timeout=0.01)
@@ -311,6 +346,14 @@ class TestAutonomyLadder:
         assert decision.reason
         assert isinstance(decision.reason, str)
         assert len(decision.reason) > 0
+
+    def test_on_exception_mode(self):
+        """R2 — HITL по исключению."""
+        ladder = AutonomyLadder(nominal=RLevel.R3)
+        # R3 - (1+0+0) = R2 -> on_exception
+        decision = ladder.decide(criticality=1, risk=0, complexity=0)
+        assert decision.level is RLevel.R2
+        assert ladder.mode(decision.level) == "on_exception"
 
     def test_effective_still_works(self):
         """Старый API effective() продолжает работать."""
@@ -367,6 +410,19 @@ class TestHITLTimeout:
         )
         assert allowed is True
 
+    async def test_approval_no_timeout(self):
+        """approval_timeout <= 0 отключает таймаут."""
+        ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=0)
+
+        async def instant(action):
+            return True
+
+        allowed = await run_with_approval(
+            ladder, {"action": "release"}, instant,
+            ctx={"criticality": 0, "risk": 0, "complexity": 0},
+        )
+        assert allowed is True
+
     async def test_approval_exception_denies(self):
         """Если approve бросил исключение — DENY, не падаем."""
         ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=1.0)
@@ -408,6 +464,34 @@ class TestAuditChain:
         assert chain.verify() is True
         assert len(chain.entries) == 2
         assert chain.entries[1].prev_hash == chain.entries[0].entry_hash
+
+    def test_public_properties(self):
+        """seq, timestamp, timestamp_millis, entry_hash, prev_hash доступны."""
+        chain = AuditChain()
+        chain.append("evt", {"a": 1})
+        e = chain.entries[0]
+
+        assert e.seq == 1
+        assert isinstance(e.timestamp, str)
+        assert "T" in e.timestamp
+        assert isinstance(e.timestamp_millis, int)
+        assert e.timestamp_millis > 0
+        assert len(e.entry_hash) == 64
+        assert e.prev_hash == "0" * 64
+
+    def test_repr(self):
+        """__repr__ не падает и содержит ключевую информацию."""
+        chain = AuditChain()
+        chain.append("evt", {})
+        assert "AuditChain" in repr(chain)
+        assert "AuditEntry" in repr(chain.entries[0])
+
+    def test_len(self):
+        chain = AuditChain()
+        assert len(chain) == 0
+        chain.append("e1", {})
+        chain.append("e2", {})
+        assert len(chain) == 2
 
     def test_payload_is_copy_not_reference(self):
         """Мутация payload в Python не влияет на Rust-цепочку."""
