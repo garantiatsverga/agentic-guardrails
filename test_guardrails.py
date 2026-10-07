@@ -302,6 +302,7 @@ class TestSaga:
         assert order == ["undo2", "undo1"]  # обратный порядок
 
     async def test_compensation_error_swallowed(self):
+        """Одна упавшая компенсация не валит run_saga (обратная совместимость)."""
         async def ok(ctx): return "ok"
         async def bad_undo(ctx, out): raise RuntimeError("undo fail")
         async def fail(ctx): raise RuntimeError("boom")
@@ -310,7 +311,74 @@ class TestSaga:
             SagaStep("s1", ok, bad_undo),
             SagaStep("s2", fail, lambda c, o: None),
         ])
-        assert result.success is False  # не падаем из-за ошибки компенсации
+        assert result.success is False
+
+    async def test_compensation_errors_are_collected(self):
+        """Ошибки компенсаций собираются, а не проглатываются."""
+        async def ok(ctx): return "ok"
+        async def fail_step(ctx): raise RuntimeError("main step failed")
+        async def bad_undo(ctx, out): raise RuntimeError("compensation failed")
+
+        result = await run_saga([
+            SagaStep("s1", ok, bad_undo),
+            SagaStep("s2", fail_step, lambda c, o: None),
+        ])
+
+        assert result.success is False
+        assert result.failed_at == "s2"
+        assert len(result.compensation_errors) == 1
+        assert "compensation failed" in str(result.compensation_errors[0])
+
+    async def test_compensation_retries_on_failure(self):
+        """Компенсация повторяется при временном сбое."""
+        attempts = []
+
+        async def ok(ctx): return "ok"
+        async def fail_step(ctx): raise RuntimeError("main failed")
+        async def flaky_undo(ctx, out):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise RuntimeError(f"attempt {len(attempts)} failed")
+
+        result = await run_saga([
+            SagaStep("s1", ok, flaky_undo),
+            SagaStep("s2", fail_step, lambda c, o: None),
+        ])
+
+        assert result.success is False
+        assert len(attempts) == 3
+        assert result.compensation_errors == []
+
+    async def test_inconsistent_flag_when_compensation_fails(self):
+        """Флаг inconsistent поднимается при окончательном провале компенсации."""
+        async def ok(ctx): return "ok"
+        async def fail_step(ctx): raise RuntimeError("main failed")
+        async def always_fail(ctx, out): raise RuntimeError("permanent failure")
+
+        result = await run_saga([
+            SagaStep("s1", ok, always_fail),
+            SagaStep("s2", fail_step, lambda c, o: None),
+        ])
+
+        assert result.success is False
+        assert result.inconsistent is True
+        assert len(result.compensation_errors) >= 1
+
+    async def test_no_inconsistency_when_compensations_succeed(self):
+        """inconsistent=False, если все компенсации прошли."""
+        async def ok(ctx): return "ok"
+        async def fail_step(ctx): raise RuntimeError("main failed")
+        async def good_undo(ctx, out): pass
+
+        result = await run_saga([
+            SagaStep("s1", ok, good_undo),
+            SagaStep("s2", fail_step, lambda c, o: None),
+        ])
+
+        assert result.success is False
+        assert result.inconsistent is False
+        assert result.compensation_errors == []
+
 
 
 # ============================================================================
