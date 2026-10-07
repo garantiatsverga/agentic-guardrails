@@ -71,6 +71,72 @@ class TestPolicyHookBus:
         assert result.decision is Decision.ESCALATE
         assert result.reason == "amount too high"
 
+    async def test_policy_timeout_escalates(self):
+        """Зависшее правило приводит к ESCALATE, а не блокирует шину."""
+        import asyncio
+
+        bus = HookBus(timeout_per_policy=0.05)
+
+        async def slow_policy(action, ctx):
+            await asyncio.sleep(10)  # зависаем надолго
+            return PolicyResult(Decision.ALLOW)
+
+        bus.register("slow", slow_policy)
+        result = await bus.check("action", {})
+
+        assert result.decision is Decision.ESCALATE
+        assert "timeout" in result.reason.lower()
+        assert result.policy_id == "slow"
+
+    async def test_policy_timeout_configurable(self):
+        """Таймаут настраивается в конструкторе."""
+        import asyncio
+
+        bus = HookBus(timeout_per_policy=0.1)
+
+        async def fast_policy(action, ctx):
+            await asyncio.sleep(0.01)  # 10 мс, укладываемся
+            return PolicyResult(Decision.ALLOW)
+
+        bus.register("fast", fast_policy)
+        result = await bus.check("action", {})
+        assert result.decision is Decision.ALLOW
+
+    async def test_fast_policy_not_affected_by_timeout(self):
+        """Быстрое правило не задевается таймаутом."""
+        bus = HookBus(timeout_per_policy=0.5)
+
+        async def instant(action, ctx):
+            return PolicyResult(Decision.ALLOW)
+
+        bus.register("instant", instant)
+        result = await bus.check("action", {})
+        assert result.decision is Decision.ALLOW
+
+    async def test_timeout_does_not_stop_other_policies(self):
+        """Зависшее правило не блокирует следующие (порядок и приоритет)."""
+        import asyncio
+
+        bus = HookBus(timeout_per_policy=0.05)
+        calls = []
+
+        async def slow(action, ctx):
+            calls.append("slow")
+            await asyncio.sleep(10)
+            return PolicyResult(Decision.ALLOW)
+
+        async def fast_deny(action, ctx):
+            calls.append("fast_deny")
+            return PolicyResult(Decision.DENY, reason="denied")
+
+        bus.register("slow", slow)
+        bus.register("fast_deny", fast_deny)
+
+        result = await bus.check("action", {})
+        # Первое правило зависло -> ESCALATE, второе не вызывается
+        assert result.decision is Decision.ESCALATE
+        assert calls == ["slow"]
+
 
 class TestCostBreaker:
     def test_ok_under_soft_threshold(self):
