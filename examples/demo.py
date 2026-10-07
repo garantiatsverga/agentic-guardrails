@@ -174,6 +174,30 @@ async def test_retry_policy() -> None:
     check("give_up_on stops retry", len(calls2) == 1)
 
 
+async def test_parallel_runner() -> None:
+    print("[parallel_runner]")
+    import asyncio
+
+    async def fn(x, delay=0.01):
+        await asyncio.sleep(delay)
+        return x * 2
+
+    results = await parallel(
+        [lambda x=i: fn(x) for i in [1, 2, 3, 4, 5]],
+        max_concurrency=3,
+    )
+    check("all success", all(r.success for r in results))
+    check("order preserved", [r.value for r in results] == [2, 4, 6, 8, 10])
+
+    # Падение одной не отменяет остальные
+    async def fail():
+        raise RuntimeError("boom")
+
+    results2 = await parallel([lambda: fn(1), fail, lambda: fn(3)])
+    check("failure isolated", results2[1].success is False)
+    check("others continue", results2[0].success and results2[2].success)
+
+
 def test_hitl() -> None:
     print("[hitl]")
     ladder = AutonomyLadder(nominal=RLevel.R5)
