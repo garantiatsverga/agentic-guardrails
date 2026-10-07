@@ -293,6 +293,93 @@ class TestAutonomyLadder:
         assert ladder.mode(RLevel.R3) == "batch"
         assert ladder.mode(RLevel.R5) == "autonomous"
 
+    def test_decide_returns_full_decision(self):
+        """decide() возвращает AutonomyDecision со всеми полями."""
+        ladder = AutonomyLadder(nominal=RLevel.R5)
+        decision = ladder.decide(criticality=1, risk=1, complexity=1)
+
+        assert decision.level is RLevel.R2
+        assert decision.nominal is RLevel.R5
+        assert decision.criticality == 1
+        assert decision.risk == 1
+        assert decision.complexity == 1
+
+    def test_decide_reason_not_empty(self):
+        """reason в AutonomyDecision заполнен — для аудита."""
+        ladder = AutonomyLadder(nominal=RLevel.R5)
+        decision = ladder.decide(criticality=2, risk=1, complexity=0)
+        assert decision.reason
+        assert isinstance(decision.reason, str)
+        assert len(decision.reason) > 0
+
+    def test_effective_still_works(self):
+        """Старый API effective() продолжает работать."""
+        ladder = AutonomyLadder(nominal=RLevel.R5)
+        assert ladder.effective(criticality=1, risk=1, complexity=1) is RLevel.R2
+        assert ladder.effective() is RLevel.R5
+
+
+class TestHITLTimeout:
+    """Таймауты на approve — агент не должен зависать."""
+
+    async def test_approval_timeout_denies(self):
+        """Зависший approve приводит к DENY (fail-safe), а не к зависанию."""
+        import asyncio
+
+        ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=0.05)
+
+        async def slow_approve(action):
+            await asyncio.sleep(10)
+            return True
+
+        allowed = await run_with_approval(
+            ladder, {"action": "final_release"}, slow_approve,
+            ctx={"criticality": 0, "risk": 0, "complexity": 0},
+        )
+        assert allowed is False
+
+    async def test_approval_timeout_configurable(self):
+        """approval_timeout настраивается в конструкторе."""
+        import asyncio
+
+        ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=0.2)
+
+        async def fast_approve(action):
+            await asyncio.sleep(0.01)
+            return True
+
+        allowed = await run_with_approval(
+            ladder, {"action": "release"}, fast_approve,
+            ctx={"criticality": 0, "risk": 0, "complexity": 0},
+        )
+        assert allowed is True
+
+    async def test_fast_approval_not_affected(self):
+        """Быстрый approve не задевается таймаутом."""
+        ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=1.0)
+
+        async def instant(action):
+            return True
+
+        allowed = await run_with_approval(
+            ladder, {"action": "release"}, instant,
+            ctx={"criticality": 0, "risk": 0, "complexity": 0},
+        )
+        assert allowed is True
+
+    async def test_approval_exception_denies(self):
+        """Если approve бросил исключение — DENY, не падаем."""
+        ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=1.0)
+
+        async def broken(action):
+            raise RuntimeError("HITL backend crashed")
+
+        allowed = await run_with_approval(
+            ladder, {"action": "release"}, broken,
+            ctx={"criticality": 0, "risk": 0, "complexity": 0},
+        )
+        assert allowed is False
+
 
 class TestEvidenceBundle:
     def test_add_decision(self):
