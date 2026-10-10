@@ -45,6 +45,7 @@ PY_TEST_FILES=(
     "test_retry_policy.py"
     "test_rate_limiter.py"
     "test_parallel_runner.py"
+    "test_orchestrator.py"
 )
 
 PY_PROPERTY_TEST="test_properties.py"
@@ -160,6 +161,18 @@ fi
 cd "$PROJECT_ROOT"
 maturin "${MATURIN_ARGS[@]}" || fail "maturin ${MATURIN_ARGS[*]} упал"
 ok "Rust-ядро собрано ($( [[ $FAST -eq 1 ]] && echo debug || echo release ))"
+
+# ==== Шаг 4.5: проверка импорта компонентов оркестратора ====
+if [[ -f "${PROJECT_ROOT}/orchestrator_components.py" ]]; then
+    header "Проверка компонентов оркестратора"
+    python -c "
+import sys
+sys.path.insert(0, '${PROJECT_ROOT}')
+import orchestrator_components
+print('OK')
+" || fail "orchestrator_components.py не импортируется"
+    ok "orchestrator_components.py импортируется"
+fi
 
 # ==== Шаг 5: Rust-тесты ====
 if [[ "$NO_TEST" -eq 0 ]]; then
