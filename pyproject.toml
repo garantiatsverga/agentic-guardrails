@@ -7,12 +7,26 @@ name = "agentic-guardrails"
 version = "0.1.0"
 requires-python = ">=3.10"
 description = "Universal guardrails for AI agents: policy, cost CB, failure CB, audit, saga"
+dependencies = [
+    "pdfplumber>=0.11,<0.12",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "reportlab>=4.0",
+    "colordebug",
+]
+
+[project.scripts]
+document-agent = "main:main"
 
 [tool.maturin]
 module-name = "agentic_guardrails._core"
 manifest-path = "Cargo.toml"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"

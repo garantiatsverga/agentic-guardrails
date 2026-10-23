@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Загрузка документов — Document Agent{% endblock %}
+{% block content %}
+
+{% if error %}
+<div class="error">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+    <h2>Загрузка документов</h2>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <label for="files">Файлы одной заявки (до {{ max_files }} шт., до {{ max_mb }} МБ каждый)</label>
+        <input type="file" id="files" name="files" multiple accept=".pdf,.txt" required>
+        <div class="hint">
+            Допустимые форматы: PDF, TXT. Все файлы должны относиться
+            к <b>одной</b> заявке: анкета + финотчётность + описание бизнеса.
+            Если загрузить файлы разных заявок, поля будут взяты из первого
+            файла, где они встретились.
+        </div>
+
+        <label for="business_description" style="margin-top: 16px;">Описание бизнеса</label>
+        <textarea id="business_description" name="business_description"
+                  placeholder="Например: Производство и продажа мебели"></textarea>
+        <div class="hint">Обязательное поле (§4.1).</div>
+
+        <div class="actions">
+            <button type="submit">Обработать</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Как это работает</h2>
+    <div class="muted">
+        Загрузка → извлечение (pdfplumber) → валидация (HookBus) →
+        эскалация (AutonomyLadder) → JSON для скоринга.
+        Внешние системы (БКИ, ФНС, ЕГРЮЛ) заменены моками — спринт 2.
+    </div>
+</div>
+
+{% endblock %}

@@ -5,6 +5,10 @@
 
 Каждое правило ограничено таймаутом (по умолчанию 100 мс).
 Зависшее правило приводит к ESCALATE, не блокируя шину.
+
+Два режима прогона:
+- check()     — enforcement: остановиться на первом не-ALLOW.
+- check_all() — отчёт: прогнать все правила, вернуть все результаты.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -66,6 +70,11 @@ class HookBus:
             )
 
     async def check(self, action: str, ctx: dict[str, Any]) -> PolicyResult:
+        """Enforcement: останавливается на первом не-ALLOW.
+
+        Возвращает первый не-ALLOW результат, либо ALLOW, если все прошли.
+        Подходит для блокировки действия.
+        """
         for pid, policy in self.policies:
             result = await self._run_one(pid, policy, action, ctx)
             if result.decision is not Decision.ALLOW:
@@ -75,3 +84,20 @@ class HookBus:
                     policy_id=result.policy_id or pid,
                 )
         return PolicyResult(Decision.ALLOW)
+
+    async def check_all(self, action: str, ctx: dict[str, Any]) -> list[PolicyResult]:
+        """Отчёт: прогоняет ВСЕ правила, не останавливаясь на первом не-ALLOW.
+
+        Возвращает список результатов в порядке регистрации правил.
+        Нужен для отчётов валидации (в отличие от check(), который
+        останавливает цепочку при первом не-ALLOW).
+        """
+        results: list[PolicyResult] = []
+        for pid, policy in self.policies:
+            result = await self._run_one(pid, policy, action, ctx)
+            results.append(PolicyResult(
+                decision=result.decision,
+                reason=result.reason,
+                policy_id=result.policy_id or pid,
+            ))
+        return results

@@ -7,8 +7,8 @@
   L3. E2E        — полный прогон агента: policy -> cost -> saga -> hitl -> evidence -> audit
 
 Запуск:
-    pytest -v test_guardrails.py
-    pytest -v test_guardrails.py -m e2e
+    pytest -v tests/test_guardrails.py
+    pytest -v tests/test_guardrails.py -m e2e
 """
 from __future__ import annotations
 
@@ -73,8 +73,6 @@ class TestPolicyHookBus:
 
     async def test_policy_timeout_escalates(self):
         """Зависшее правило приводит к ESCALATE, а не блокирует шину."""
-        import asyncio
-
         bus = HookBus(timeout_per_policy=0.05)
 
         async def slow_policy(action, ctx):
@@ -90,8 +88,6 @@ class TestPolicyHookBus:
 
     async def test_policy_timeout_configurable(self):
         """Таймаут настраивается в конструкторе."""
-        import asyncio
-
         bus = HookBus(timeout_per_policy=0.1)
 
         async def fast_policy(action, ctx):
@@ -115,7 +111,6 @@ class TestPolicyHookBus:
 
     async def test_timeout_disabled_by_zero(self):
         """timeout_per_policy <= 0 отключает таймаут."""
-        import asyncio
         bus = HookBus(timeout_per_policy=0)
 
         async def slow(action, ctx):
@@ -128,8 +123,6 @@ class TestPolicyHookBus:
 
     async def test_timeout_does_not_stop_other_policies(self):
         """Зависшее правило не блокирует следующие (порядок и приоритет)."""
-        import asyncio
-
         bus = HookBus(timeout_per_policy=0.05)
         calls = []
 
@@ -149,6 +142,78 @@ class TestPolicyHookBus:
         # Первое правило зависло -> ESCALATE, второе не вызывается
         assert result.decision is Decision.ESCALATE
         assert calls == ["slow"]
+
+    # NEW: тесты для check_all()
+    async def test_check_all_collects_all_results(self):
+        """check_all() прогоняет ВСЕ правила, не останавливаясь на не-ALLOW."""
+        bus = HookBus()
+
+        async def ok(action, ctx):
+            return PolicyResult(Decision.ALLOW)
+
+        async def deny(action, ctx):
+            return PolicyResult(Decision.DENY, reason="bad")
+
+        async def escalate(action, ctx):
+            return PolicyResult(Decision.ESCALATE, reason="big")
+
+        bus.register("ok", ok)
+        bus.register("deny", deny)
+        bus.register("escalate", escalate)
+
+        results = await bus.check_all("act", {})
+        assert len(results) == 3
+        assert [r.decision for r in results] == [
+            Decision.ALLOW, Decision.DENY, Decision.ESCALATE,
+        ]
+        assert [r.policy_id for r in results] == ["ok", "deny", "escalate"]
+
+    async def test_check_all_empty_bus(self):
+        bus = HookBus()
+        results = await bus.check_all("act", {})
+        assert results == []
+
+    async def test_check_all_preserves_order(self):
+        """Порядок результатов = порядок регистрации правил."""
+        bus = HookBus()
+        order = []
+
+        def make(name):
+            async def policy(action, ctx):
+                order.append(name)
+                return PolicyResult(Decision.ALLOW, policy_id=name)
+            return policy
+
+        for name in ["a", "b", "c"]:
+            bus.register(name, make(name))
+
+        results = await bus.check_all("act", {})
+        assert order == ["a", "b", "c"]
+        assert [r.policy_id for r in results] == ["a", "b", "c"]
+
+    async def test_check_all_timeout_still_escalates_but_continues(self):
+        """check_all() при таймауте правила даёт ESCALATE и идёт дальше."""
+        bus = HookBus(timeout_per_policy=0.05)
+        calls = []
+
+        async def slow(action, ctx):
+            calls.append("slow")
+            await asyncio.sleep(10)
+            return PolicyResult(Decision.ALLOW)
+
+        async def fast(action, ctx):
+            calls.append("fast")
+            return PolicyResult(Decision.ALLOW)
+
+        bus.register("slow", slow)
+        bus.register("fast", fast)
+
+        results = await bus.check_all("act", {})
+        assert len(results) == 2
+        assert results[0].decision is Decision.ESCALATE
+        assert "timeout" in results[0].reason.lower()
+        assert results[1].decision is Decision.ALLOW
+        assert calls == ["slow", "fast"]  # оба вызваны
 
 
 class TestCostBreaker:
@@ -367,8 +432,6 @@ class TestHITLTimeout:
 
     async def test_approval_timeout_denies(self):
         """Зависший approve приводит к DENY (fail-safe), а не к зависанию."""
-        import asyncio
-
         ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=0.05)
 
         async def slow_approve(action):
@@ -383,8 +446,6 @@ class TestHITLTimeout:
 
     async def test_approval_timeout_configurable(self):
         """approval_timeout настраивается в конструкторе."""
-        import asyncio
-
         ladder = AutonomyLadder(nominal=RLevel.R0, approval_timeout=0.2)
 
         async def fast_approve(action):
@@ -451,6 +512,31 @@ class TestEvidenceBundle:
         data = json.loads(b.to_json())
         assert data["task_id"] == "t1"
         assert data["evals"]["accuracy"] == 0.95
+
+    # NEW: тесты для add_validation() и новых полей
+    def test_add_validation(self):
+        b = EvidenceBundle(task_id="t1", agent_id="a1", outcome="success")
+        b.add_validation("inn", "passed", "формат корректный")
+        assert len(b.validation_results) == 1
+        assert b.validation_results[0] == {
+            "field": "inn", "status": "passed", "message": "формат корректный",
+        }
+
+    def test_missing_data_default_empty(self):
+        b = EvidenceBundle(task_id="t1", agent_id="a1", outcome="success")
+        assert b.missing_data == []
+
+    def test_add_validation_roundtrip(self):
+        """validation_results попадают в to_json()."""
+        import json
+        b = EvidenceBundle(task_id="t1", agent_id="a1", outcome="partial")
+        b.add_validation("inn", "error", "не найден")
+        b.add_validation("amount", "passed", "")
+        b.missing_data = ["inn"]
+        data = json.loads(b.to_json())
+        assert len(data["validation_results"]) == 2
+        assert data["validation_results"][0]["field"] == "inn"
+        assert data["missing_data"] == ["inn"]
 
 
 class TestAuditChain:

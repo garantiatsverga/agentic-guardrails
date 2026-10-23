@@ -41,14 +41,14 @@ PY_DEPS=(
 
 # Файлы Python-тестов (явно, без автопоиска — чтобы CI был предсказуем)
 PY_TEST_FILES=(
-    "test_guardrails.py"
-    "test_retry_policy.py"
-    "test_rate_limiter.py"
-    "test_parallel_runner.py"
-    "test_orchestrator.py"
+    "tests/test_guardrails.py"
+    "tests/test_retry_policy.py"
+    "tests/test_rate_limiter.py"
+    "tests/test_parallel_runner.py"
+    "tests/test_orchestrator.py"
 )
 
-PY_PROPERTY_TEST="test_properties.py"
+PY_PROPERTY_TEST="tests/test_properties.py"
 
 # ==== Цвета ====
 if [[ -t 1 ]]; then
@@ -173,6 +173,12 @@ print('OK')
 " || fail "orchestrator_components.py не импортируется"
     ok "orchestrator_components.py импортируется"
 fi
+
+# ==== Шаг 4.6: проверка импорта библиотеки ====
+header "Проверка импорта библиотеки"
+python -c "import agentic_guardrails; print('agentic_guardrails OK')" \
+    || fail "agentic_guardrails не импортируется"
+ok "agentic_guardrails импортируется"
 
 # ==== Шаг 5: Rust-тесты ====
 if [[ "$NO_TEST" -eq 0 ]]; then

@@ -3,9 +3,6 @@ target/
 **/*.rs.bk
 *.pdb
 
-# Cargo.lock НЕ игнорируем: это workspace с bin-подобной сборкой через maturin.
-# Для чистой библиотеки — игнорировали бы, здесь — коммитим.
-
 # ===== Python =====
 __pycache__/
 *.py[cod]

@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Результат {{ r.application_id[:8] }} — Document Agent{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Результат обработки</h2>
+    <div class="kv">
+        <div class="k">ID заявки</div>
+        <div><code>{{ r.application_id }}</code></div>
+
+        <div class="k">Статус извлечения</div>
+        <div class="status-{{ r.extraction_status }}">{{ r.extraction_status }}</div>
+
+        <div class="k">Требует ручной проверки</div>
+        <div>{{ "да" if r.requires_manual_review else "нет" }}</div>
+
+        {% if r.escalation_reason %}
+        <div class="k">Причина эскалации</div>
+        <div>{{ r.escalation_reason }}</div>
+        {% endif %}
+
+        {% if r.missing_data %}
+        <div class="k">Отсутствующие поля</div>
+        <div>{{ r.missing_data | join(", ") }}</div>
+        {% endif %}
+    </div>
+
+    <div class="actions">
+        <a href="/result/{{ r.application_id }}.json">
+            <button class="secondary" type="button">Скачать JSON для скоринга</button>
+        </a>
+    </div>
+</div>
+
+{% if conflicts %}
+<div class="card" style="border-color: #d4a72c; background: #fffbeb;">
+    <h2>Конфликты между документами</h2>
+    <table>
+        <tr><th>Поле</th><th>Значения по документам</th><th>Взято</th></tr>
+        {% for c in conflicts %}
+        <tr>
+            <td><code>{{ c.field }}</code></td>
+            <td>
+                {% for src, val in c.values.items() %}
+                <div>{{ val }} <span class="muted">← {{ src }}</span></div>
+                {% endfor %}
+            </td>
+            <td><b>{{ c.chosen }}</b> <span class="muted">← {{ c.chosen_source }}</span></td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Извлечённые данные</h2>
+    <table>
+        <tr><th>Поле</th><th>Значение</th><th>Источник</th><th>Роль</th></tr>
+        {% for field_name, label in [
+            ("company_name", "Название компании"),
+            ("inn", "ИНН"),
+            ("requested_amount", "Запрашиваемая сумма"),
+            ("requested_term_months", "Срок (мес.)"),
+            ("revenue_last_year", "Выручка за последний год"),
+            ("profit_last_year", "Прибыль за последний год"),
+            ("employees_count", "Количество сотрудников"),
+            ("business_description", "Описание бизнеса"),
+        ] %}
+        <tr>
+            <td>{{ label }}</td>
+            <td>{{ r.extracted_data[field_name] or "—" }}</td>
+            <td class="muted">{{ sources.get(field_name, "—") }}</td>
+            <td class="muted">{{ roles.get(sources.get(field_name, ""), "—") }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+
+{% if r.validation_results %}
+<div class="card">
+    <h2>Результаты валидации</h2>
+    <table>
+        <tr><th>Проверка</th><th>Статус</th><th>Сообщение</th></tr>
+        {% for v in r.validation_results %}
+        <tr>
+            <td><code>{{ v.field }}</code></td>
+            <td><span class="badge {{ v.status }}">{{ v.status }}</span></td>
+            <td>{{ v.message or "—" }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+{% if external %}
+<div class="card">
+    <h2>Внешние системы <span class="muted">(моки, спринт 2 — реальные MCP)</span></h2>
+    <table>
+        <tr><th>Источник</th><th>Данные</th></tr>
+        <tr><td>БКИ</td><td><code>{{ external.bki }}</code></td></tr>
+        <tr><td>ФНС</td><td><code>{{ external.fns }}</code></td></tr>
+        <tr><td>ЕГРЮЛ</td><td><code>{{ external.egrul }}</code></td></tr>
+    </table>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Эскалация</h2>
+    {% if escalated %}
+    <div class="muted">
+        Заявка передана на ручную проверку. Причина: {{ escalation_reason }}
+    </div>
+    {% else %}
+    <form action="/result/{{ r.application_id }}/escalate" method="post">
+        <label for="reason">Причина ручной проверки</label>
+        <textarea id="reason" name="reason"
+                  placeholder="Например: требуется проверка андеррайтером"></textarea>
+        <div class="actions">
+            <button type="submit" class="secondary">Отправить на ручную проверку</button>
+        </div>
+    </form>
+    {% endif %}
+</div>
+
+{% endblock %}
