@@ -48,7 +48,6 @@ def _render_upload(request: Request, error: str | None = None, status: int = 200
 
 
 def _get_extraction_meta(app_id: str) -> dict:
-    """sources, roles, conflicts из последней extraction.done в аудите."""
     chain = get_audit_chain()
     for e in reversed(chain.entries):
         if e.event == "extraction.done" and e.payload.get("app_id") == app_id:
@@ -148,6 +147,18 @@ def _log_pipeline_result(result: ApplicationResult) -> None:
         cd.info(f"[WEB]   причина эскалации: {result.escalation_reason}")
 
 
+# ВАЖНО: .json-маршрут объявлен ДО /result/{app_id},
+# иначе "abc.json" матчится на {app_id}="abc.json" и даёт 404.
+@app.get("/result/{app_id}.json")
+async def result_json(app_id: str):
+    result = RESULTS.get(app_id)
+    if result is None:
+        cd.warning(f"[WEB] GET /result/{app_id[:8]}.json — не найдена")
+        return JSONResponse({"error": "not found", "application_id": app_id}, status_code=404)
+    cd.info(f"[WEB] GET /result/{app_id[:8]}.json — JSON §6.1, status={result.extraction_status}")
+    return JSONResponse(result.model_dump())
+
+
 @app.get("/result/{app_id}", response_class=HTMLResponse)
 async def result_page(request: Request, app_id: str):
     result = RESULTS.get(app_id)
@@ -166,16 +177,6 @@ async def result_page(request: Request, app_id: str):
          "roles": meta["roles"],
          "conflicts": meta["conflicts"]},
     )
-
-
-@app.get("/result/{app_id}.json")
-async def result_json(app_id: str):
-    result = RESULTS.get(app_id)
-    if result is None:
-        cd.warning(f"[WEB] GET /result/{app_id[:8]}.json — не найдена")
-        return JSONResponse({"error": "not found", "application_id": app_id}, status_code=404)
-    cd.info(f"[WEB] GET /result/{app_id[:8]}.json — JSON §6.1, status={result.extraction_status}")
-    return JSONResponse(result.model_dump())
 
 
 @app.post("/result/{app_id}/escalate")

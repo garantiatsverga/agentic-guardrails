@@ -280,7 +280,12 @@ def extract_bundle(
     read_any = False
 
     for f in files:
-        filename = getattr(f, "filename", None) or str(f)
+        # Для UploadFile — .filename; для Path/str — только имя файла,
+        # не полный путь. Иначе roles/sources содержат /home/user/...
+        if getattr(f, "filename", None):
+            filename = f.filename
+        else:
+            filename = Path(str(f)).name
         try:
             source = getattr(f, "file", f)
             fields = _parse_one(source)

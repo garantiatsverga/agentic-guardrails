@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 #
-# build.sh — сборка agentic_guardrails с нуля.
+# build.sh — сборка agentic_guardrails + Document Agent с нуля.
 #
 # Что делает:
 #   1. Проверяет окружение (python3, cargo, rustc)
 #   2. Создаёт .venv (если нет) и активирует
-#   3. Ставит Python-зависимости (maturin, pytest, pytest-asyncio, pytest-cov, hypothesis)
+#   3. Ставит Python-зависимости
 #   4. Собирает Rust-ядро через maturin develop --release
 #   5. Прогоняет Rust-тесты (cargo test --workspace)
-#   6. Прогоняет Python-тесты (pytest)
+#   6. Прогоняет Python-тесты (pytest tests/)
 #   7. Прогоняет smoke test (examples/demo.py)
-#   8. Показывает покрытие (pytest --cov)
+#   8. Прогоняет CLI-демо Document Agent (4 кейса §12)
+#   9. Показывает покрытие (pytest --cov)
 #
 # Использование:
 #   ./build.sh              # полная сборка + тесты + покрытие + demo
 #   ./build.sh --no-test    # только сборка
-#   ./build.sh --no-demo    # без smoke-теста
+#   ./build.sh --no-demo    # без smoke-теста и CLI
 #   ./build.sh --no-cov     # без покрытия
 #   ./build.sh --clean      # снести target/ и .venv/, собрать с нуля
 #   ./build.sh --fast       # debug-сборка (быстрее, но медленнее runtime)
@@ -30,7 +31,6 @@ PYTHON_MIN_MINOR=10
 RUST_MIN_MAJOR=1
 RUST_MIN_MINOR=63
 
-# Все Python-зависимости для разработки и тестов
 PY_DEPS=(
     "maturin"
     "pytest"
@@ -46,6 +46,7 @@ PY_TEST_FILES=(
     "tests/test_rate_limiter.py"
     "tests/test_parallel_runner.py"
     "tests/test_orchestrator.py"
+    "tests/test_document_agent.py"
 )
 
 PY_PROPERTY_TEST="tests/test_properties.py"
@@ -85,7 +86,7 @@ for arg in "$@"; do
     esac
 done
 
-# ==== Шаг 0: опциональная очистка ====
+# ==== Шаг 0: очистка ====
 if [[ "$CLEAN" -eq 1 ]]; then
     header "Очистка"
     log "Удаляю target/..."
@@ -95,12 +96,12 @@ if [[ "$CLEAN" -eq 1 ]]; then
     ok "Очищено"
 fi
 
-# ==== Шаг 1: проверка окружения ====
+# ==== Шаг 1: окружение ====
 header "Проверка окружения"
 
 command -v python3 >/dev/null 2>&1 || fail "python3 не найден в PATH"
-command -v cargo   >/dev/null 2>&1 || fail "cargo не найден в PATH (установи Rust: https://rustup.rs)"
-command -v rustc   >/dev/null 2>&1 || fail "rustc не найден в PATH"
+command -v cargo   >/dev/null 2>&1 || fail "cargo не найден (https://rustup.rs)"
+command -v rustc   >/dev/null 2>&1 || fail "rustc не найден"
 
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 PY_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
@@ -129,7 +130,7 @@ header "Виртуальное окружение"
 
 if [[ ! -d "$VENV_DIR" ]]; then
     log "Создаю ${VENV_DIR}..."
-    python3 -m venv "$VENV_DIR" || fail "python3 -m venv не сработал (нужен python3-venv?)"
+    python3 -m venv "$VENV_DIR" || fail "python3 -m venv не сработал"
     ok "venv создан"
 else
     ok "venv уже существует"
@@ -144,6 +145,7 @@ header "Установка Python-зависимостей"
 
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet "${PY_DEPS[@]}"
+python -m pip install --quiet -e "${PROJECT_ROOT}" || fail "pip install -e . упал"
 
 for dep in "${PY_DEPS[@]}"; do
     ver=$(python -m pip show "$dep" 2>/dev/null | awk '/^Version:/ {print $2}')
@@ -162,25 +164,17 @@ cd "$PROJECT_ROOT"
 maturin "${MATURIN_ARGS[@]}" || fail "maturin ${MATURIN_ARGS[*]} упал"
 ok "Rust-ядро собрано ($( [[ $FAST -eq 1 ]] && echo debug || echo release ))"
 
-# ==== Шаг 4.5: проверка импорта компонентов оркестратора ====
-if [[ -f "${PROJECT_ROOT}/orchestrator_components.py" ]]; then
-    header "Проверка компонентов оркестратора"
-    python -c "
-import sys
-sys.path.insert(0, '${PROJECT_ROOT}')
-import orchestrator_components
-print('OK')
-" || fail "orchestrator_components.py не импортируется"
-    ok "orchestrator_components.py импортируется"
-fi
-
-# ==== Шаг 4.6: проверка импорта библиотеки ====
-header "Проверка импорта библиотеки"
+# ==== Шаг 4.5: импорты ====
+header "Проверка импортов"
 python -c "import agentic_guardrails; print('agentic_guardrails OK')" \
     || fail "agentic_guardrails не импортируется"
-ok "agentic_guardrails импортируется"
+python -c "import document_agent; print('document_agent OK')" \
+    || fail "document_agent не импортируется"
+python -c "import main; print('main OK')" \
+    || fail "main.py не импортируется"
+ok "все модули импортируются"
 
-# ==== Шаг 5: Rust-тесты ====
+# ==== Шаг 5-6: Rust + Python тесты ====
 if [[ "$NO_TEST" -eq 0 ]]; then
     header "Rust-тесты"
     cargo test --workspace --quiet 2>&1 | grep -E "^(running|test result)" || true
@@ -189,7 +183,6 @@ if [[ "$NO_TEST" -eq 0 ]]; then
     fi
     ok "Rust-тесты прошли"
 
-    # ==== Шаг 6: Python-тесты ====
     header "Python-тесты"
 
     existing_tests=()
@@ -208,7 +201,6 @@ if [[ "$NO_TEST" -eq 0 ]]; then
         ok "Основные тесты прошли"
     fi
 
-    # Property-based тесты отдельно
     if [[ -f "${PROJECT_ROOT}/${PY_PROPERTY_TEST}" ]]; then
         log "Property-based тесты (${PY_PROPERTY_TEST})..."
         pytest -q "${PY_PROPERTY_TEST}" || fail "Property-based тесты провалились"
@@ -220,19 +212,27 @@ fi
 if [[ "$NO_TEST" -eq 0 && "$NO_COV" -eq 0 ]]; then
     header "Покрытие"
     if [[ ${#existing_tests[@]} -gt 0 ]]; then
-        pytest --quiet --cov=agentic_guardrails --cov-report=term-missing \
-            "${existing_tests[@]}" 2>&1 | tail -20
+        pytest --quiet --cov=agentic_guardrails --cov=document_agent \
+            --cov-report=term-missing "${existing_tests[@]}" 2>&1 | tail -30
     fi
 fi
 
-# ==== Шаг 8: smoke test ====
+# ==== Шаг 8: smoke + CLI ====
 if [[ "$NO_TEST" -eq 0 && "$NO_DEMO" -eq 0 ]]; then
     header "Smoke test (examples/demo.py)"
     if [[ -f "${PROJECT_ROOT}/examples/demo.py" ]]; then
         python "${PROJECT_ROOT}/examples/demo.py" || fail "Smoke test провалился"
-        ok "Все модули работают"
+        ok "Библиотека работает"
     else
         warn "examples/demo.py не найден — пропускаю"
+    fi
+
+    header "CLI-демо Document Agent (4 кейса §12)"
+    if [[ -f "${PROJECT_ROOT}/main.py" ]]; then
+        python "${PROJECT_ROOT}/main.py" --cli || fail "CLI-демо провалилось"
+        ok "Document Agent: 4 кейса прошли"
+    else
+        warn "main.py не найден — пропускаю"
     fi
 fi
 
@@ -241,6 +241,8 @@ header "Готово"
 ok "Проект собран и протестирован"
 echo ""
 echo "  Активировать окружение:  source .venv/bin/activate"
+echo "  Веб-интерфейс:           python main.py"
+echo "  CLI-демо (4 кейса):      python main.py --cli"
 echo "  Пересобрать:             ./build.sh"
 echo "  Быстрая сборка:          ./build.sh --fast"
 echo "  С нуля:                  ./build.sh --clean"
