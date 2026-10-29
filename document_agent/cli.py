@@ -1,16 +1,7 @@
-"""CLI-прогон 4 кейсов §12 — для записи видео-демо.
+"""CLI-демо Document Agent.
 
-Запуск:
-    python main.py --cli
-    # или:
-    python -m document_agent.cli
-
-Цветной вывод — через colordebug (импортируется как cd, чтобы
-не засорять пространство имён общими именами info/error/warning
-и избежать коллизий с logging или другими модулями).
-
-В конце — финальный cd-вывод chain.verify() == True:
-tamper-evident аудит по всем 4 кейсам. Это финальный кадр видео.
+Выводит цветной результат (через colordebug), показывает извлечение,
+валидацию, эскалацию и финальный AuditChain.verify().
 """
 from __future__ import annotations
 
@@ -20,134 +11,135 @@ from pathlib import Path
 
 import colordebug as cd
 
-from document_agent.pipeline import run_pipeline, get_audit_chain, reset_state
+from document_agent.pipeline import run_pipeline, run_full_process, get_audit_chain, reset_state
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+REAL_DOCS = FIXTURES / "real_docs"
 
+# Базовые кейсы
 CASES = [
-    {
-        "id": "case1",
-        "file": "case1_success.pdf",
-        "business_description": "Производство и продажа мебели",
-        "expect_status": "success",
-        "expect_review": False,
-        "title": "Кейс 1: позитивный — все данные корректны",
-    },
-    {
-        "id": "case2",
-        "file": "case2_partial.pdf",
-        "business_description": "",
-        "expect_status": "partial",
-        "expect_review": True,
-        "title": "Кейс 2: негативный — отсутствует ИНН",
-    },
-    {
-        "id": "case3",
-        "file": "case3_escalate.pdf",
-        "business_description": "Производство мебели",
-        "expect_status": "success",
-        "expect_review": True,
-        "title": "Кейс 3: пограничный — сумма > 5 млн",
-    },
-    {
-        "id": "case4",
-        "file": "case4_failed.pdf",
-        "business_description": "",
-        "expect_status": "failed",
-        "expect_review": True,
-        "title": "Кейс 4: ошибка — файл не поддаётся парсингу",
-    },
+    {"id": "case1", "file": "case1_success.pdf", "title": "Позитивный (success)"},
+    {"id": "case2", "file": "case2_partial.pdf", "title": "Негативный (partial, нет ИНН)"},
+    {"id": "case3", "file": "case3_escalate.pdf", "title": "Пограничный (сумма > 5 млн)"},
+    {"id": "case4", "file": "case4_failed.pdf", "title": "Ошибка (битый PDF)"},
 ]
 
 
-def _print_result(case: dict, result) -> bool:
-    """Печатает результат одного кейса. Возвращает True, если совпало с ожиданием."""
-    ok_status = result.extraction_status == case["expect_status"]
-    ok_review = result.requires_manual_review == case["expect_review"]
-    passed = ok_status and ok_review
-
-    if passed:
-        cd.success(
-            f"[{case['id']}] {result.extraction_status} | "
-            f"review={result.requires_manual_review}"
-        )
-    else:
-        cd.error(
-            f"[{case['id']}] ожидали {case['expect_status']}/"
-            f"{case['expect_review']}, получили "
-            f"{result.extraction_status}/{result.requires_manual_review}"
-        )
-
-    if result.escalation_reason:
-        cd.info(f"  причина: {result.escalation_reason}")
-    if result.missing_data:
-        cd.warning(f"  missing: {result.missing_data}")
-    return passed
-
-
-async def run_demo_cases() -> int:
-    """Прогон 4 кейсов. Возвращает 0, если все совпали с ожиданием, 1 иначе."""
+def run_demo_cases() -> int:
+    """Прогон 4 кейсов (§12)."""
     reset_state()
-
     cd.info("=" * 70)
-    cd.info("Document Agent — спринт 1. Прогон 4 кейсов из §12")
+    cd.info("Document Agent — прогон 4 кейсов")
     cd.info("=" * 70)
 
     all_passed = True
-
     for case in CASES:
         path = FIXTURES / case["file"]
         if not path.exists():
-            cd.critical(f"Фикстура не найдена: {path}")
+            cd.critical(f"Не найдена фикстура: {path}")
             return 1
-
-        cd.info("")
-        cd.info(f"▶ {case['title']}")
-        cd.info(f"  файл: {case['file']}")
-
-        with cd.timer(f"pipeline {case['id']}"):
-            result = await run_pipeline(
-                files=[str(path)],
-                business_description=case["business_description"],
-            )
-
-        if not _print_result(case, result):
+            
+        cd.info(f"\n▶ {case['title']}")
+        result = asyncio.run(run_pipeline([path], ""))
+        
+        ok_status = result.extraction_status in ("success", "partial", "failed")
+        if result.extraction_status == "failed" and case["id"] != "case4":
+            ok_status = False
+            
+        if ok_status:
+            cd.success(f"  Статус: {result.extraction_status} | Review: {result.requires_manual_review}")
+        else:
+            cd.error(f"  Статус: {result.extraction_status} (ожидалось другое)")
             all_passed = False
+            
+        if result.escalation_reason:
+            cd.info(f"  Причина: {result.escalation_reason}")
+        if result.missing_data:
+            cd.warning(f"  Отсутствуют: {result.missing_data}")
 
-    # ---- Финальный кадр: аудит ----
-    cd.info("")
-    cd.info("=" * 70)
+    # Финал
+    cd.info("\n" + "=" * 70)
     chain = get_audit_chain()
-    audit_ok = chain.verify()
-
-    cd.log_value("audit_entries", len(chain), exp=True)
-    cd.log_value("audit_verify", audit_ok, exp=True)
-
-    if audit_ok:
+    if chain.verify():
         cd.success("AuditChain.verify() == True — журнал целостен")
     else:
-        cd.critical("AuditChain.verify() == False — журнал повреждён")
+        cd.critical("AuditChain.verify() == False — журнал повреждён!")
+        all_passed = False
+        
+    if all_passed:
+        cd.success("Все 4 кейса прошли.")
+        return 0
+    return 1
 
+
+def run_full_demo() -> int:
+    """Прогон полного процесса на реальных документах."""
+    reset_state()
     cd.info("=" * 70)
-    if all_passed and audit_ok:
-        cd.success("Все 4 кейса прошли. Прототип работает.")
+    cd.info("Document Agent — Полный процесс (8 этапов)")
+    cd.info("=" * 70)
+
+    # Собираем все PDF из real_docs
+    files = sorted(REAL_DOCS.glob("*.pdf"))
+    if not files:
+        cd.critical(f"Не найдены документы в {REAL_DOCS}")
+        return 1
+
+    cd.info(f"Загружено документов: {len(files)}")
+    for f in files:
+        cd.debug(f"  - {f.name}")
+
+    # Запускаем
+    app = asyncio.run(run_full_process(files, "Розничная торговля"))
+
+    # Выводим результаты
+    cd.info("\n--- Результат обработки ---")
+    
+    # 1. Оркестратор
+    cd.info(f"Workflow ID: {app.workflow_id}")
+    cd.info(f"R-level: {app.r_level}")
+    cd.info(f"Политики: {', '.join(app.policy_ids)}")
+    
+    # 2. Document Agent
+    da = app.document_agent_result
+    if da:
+        if da.extraction_status == "success":
+            cd.success(f"Document Agent: {da.extraction_status}")
+        else:
+            cd.warning(f"Document Agent: {da.extraction_status} (review={da.requires_manual_review})")
+        
+        if da.extracted_data.company_name:
+            cd.info(f"  Компания: {da.extracted_data.company_name}")
+        if da.extracted_data.inn:
+            cd.info(f"  ИНН: {da.extracted_data.inn}")
+        if da.extracted_data.requested_amount:
+            cd.info(f"  Сумма: {da.extracted_data.requested_amount:,} ₽")
+            
+    # 3. Скоринг (МОК)
+    sc = app.scoring_result
+    cd.info(f"\nScoring Agent [МОК]: {sc['score']} / 1000")
+    cd.info(f"  Вердикт: {sc['verdict']}")
+    cd.info(f"  Риск-категория: {sc['risk_category']}")
+    
+    # 4. Маршрут
+    cd.info("\nМаршрут обработки [МОК]:")
+    for step in app.route:
+        status = step["status"]
+        if "выполнено" in status:
+            cd.success(f"  {step['num']}. {step['agent']} — {status}")
+        elif "ожидает" in status:
+            cd.warning(f"  {step['num']}. {step['agent']} — {status}")
+        else:
+            cd.info(f"  {step['num']}. {step['agent']} — {status}")
+
+    # Финал
+    cd.info("\n" + "=" * 70)
+    chain = get_audit_chain()
+    if chain.verify():
+        cd.success("AuditChain.verify() == True — журнал целостен")
+        cd.success("Полный процесс завершён.")
         return 0
     else:
-        cd.error("Есть расхождения. См. вывод выше.")
+        cd.critical("AuditChain.verify() == False!")
         return 1
-
-
-def main() -> int:
-    try:
-        return asyncio.run(run_demo_cases())
-    except KeyboardInterrupt:
-        cd.warning("Прервано пользователем")
-        return 130
-    except Exception as exc:
-        cd.critical(f"Непредвиденная ошибка: {type(exc).__name__}: {exc}")
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

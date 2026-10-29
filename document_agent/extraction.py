@@ -2,21 +2,6 @@
 
 Формат фикстур и демо-документов: одна страница, построчно
 «Вопрос: ответ», кириллица. Без таблиц, без OCR.
-
-Обработка 1–3 файлов одной заявки (§4.2):
-1. _detect_role()          — роль документа: application / financial /
-                             description / unknown.
-                             По имени файла + набору полей.
-2. _parse_one()            — поля одного PDF.
-3. _merge_with_priority()  — слияние с приоритетом по §4.1:
-                             application > financial > description > unknown.
-4. _detect_conflicts()     — если поле встретилось в 2+ файлах с разными
-                             значениями -> конфликт (warning в validation).
-
-Что НЕ делаем (спринт 2+):
-- OCR для сканов
-- таблицы (extract_tables)
-- сверка с БКИ/ФНС/ЕГРЮЛ (моки — в mocks.py)
 """
 from __future__ import annotations
 
@@ -30,12 +15,15 @@ import pdfplumber
 from document_agent.models import ExtractedData
 
 
-# Строка вида "Вопрос: ответ"
 LINE_RE = re.compile(r"^\s*([^:]+?)\s*:\s*(.+?)\s*$")
 
 # Русские подписи -> поля ExtractedData (§6.1)
 FIELD_MAP: dict[str, str] = {
     "название компании": "company_name",
+    "фио": "company_name",
+    "фамилия": "company_name",       # Для ИП (паспорт)
+    "имя": "company_name",           # склеиваем
+    "отчество": "company_name",      # склеиваем
     "инн": "inn",
     "запрашиваемая сумма": "requested_amount",
     "срок (мес.)": "requested_term_months",
@@ -59,16 +47,11 @@ class ExtractionFailed(Exception):
     """Все файлы оказались нечитаемыми — pipeline ставит status=failed."""
 
 
-# ==== Роли документов (§4.1) ====
-
-ROLE_APPLICATION = "application"   # Анкета заёмщика
-ROLE_FINANCIAL = "financial"       # Финансовая отчётность
-ROLE_DESCRIPTION = "description"   # Описание бизнеса
+ROLE_APPLICATION = "application"
+ROLE_FINANCIAL = "financial"
+ROLE_DESCRIPTION = "description"
 ROLE_UNKNOWN = "unknown"
 
-# Приоритет ролей: меньше число — выше приоритет.
-# §4.1: анкета — обязательна и содержит ключевые поля; финотчётность —
-# опциональна и содержит revenue/profit.
 ROLE_PRIORITY = {
     ROLE_APPLICATION: 0,
     ROLE_FINANCIAL: 1,
@@ -76,8 +59,6 @@ ROLE_PRIORITY = {
     ROLE_UNKNOWN: 3,
 }
 
-# Приоритетный источник для каждого поля (по §4.1).
-# Если поле есть в файле с этой ролью — берём оттуда, иначе fallback.
 FIELD_PREFERRED_ROLE: dict[str, str] = {
     "company_name": ROLE_APPLICATION,
     "inn": ROLE_APPLICATION,
@@ -89,17 +70,20 @@ FIELD_PREFERRED_ROLE: dict[str, str] = {
     "business_description": ROLE_DESCRIPTION,
 }
 
-# Подсказки по имени файла
 ROLE_NAME_HINTS: list[tuple[str, str]] = [
     ("анкета", ROLE_APPLICATION),
     ("anketa", ROLE_APPLICATION),
     ("application", ROLE_APPLICATION),
     ("form", ROLE_APPLICATION),
+    ("паспорт", ROLE_APPLICATION),
+    ("passport", ROLE_APPLICATION),
     ("фин", ROLE_FINANCIAL),
     ("financial", ROLE_FINANCIAL),
     ("отчет", ROLE_FINANCIAL),
     ("отчёт", ROLE_FINANCIAL),
     ("balance", ROLE_FINANCIAL),
+    ("выписка", ROLE_FINANCIAL),
+    ("vypiska", ROLE_FINANCIAL),
     ("описан", ROLE_DESCRIPTION),
     ("description", ROLE_DESCRIPTION),
     ("бизнес", ROLE_DESCRIPTION),
@@ -108,7 +92,6 @@ ROLE_NAME_HINTS: list[tuple[str, str]] = [
 
 @dataclass
 class DocumentInfo:
-    """Информация об одном файле в пакете."""
     filename: str
     role: str
     fields: dict
@@ -117,16 +100,13 @@ class DocumentInfo:
 
 @dataclass
 class BundleResult:
-    """Результат обработки пакета 1–3 файлов одной заявки."""
     data: ExtractedData
-    status: str                                # "success" | "partial"
+    status: str
     sources: dict[str, str] = field(default_factory=dict)
-    roles: dict[str, str] = field(default_factory=dict)       # filename -> role
-    conflicts: list[dict] = field(default_factory=list)       # [{field, values, chosen, chosen_source}]
+    roles: dict[str, str] = field(default_factory=dict)
+    conflicts: list[dict] = field(default_factory=list)
     documents: list[DocumentInfo] = field(default_factory=list)
 
-
-# ==== Парсинг ====
 
 def _parse_int(raw: str) -> int | None:
     cleaned = re.sub(r"[^\d-]", "", raw)
@@ -158,12 +138,15 @@ def parse_text(text: str) -> dict:
             if parsed is not None:
                 fields[field] = parsed
         else:
-            fields[field] = value_raw.strip()
+            # Склеиваем ФИО
+            if field == "company_name" and field in fields:
+                fields[field] = f"{fields[field]} {value_raw.strip()}"
+            else:
+                fields[field] = value_raw.strip()
     return fields
 
 
 def _parse_one(source: str | Path | BinaryIO) -> dict:
-    """Открывает PDF и возвращает словарь полей. Бросает при ошибке."""
     with pdfplumber.open(source) as pdf:
         text = "\n".join(
             (page.extract_text() or "") for page in pdf.pages
@@ -171,22 +154,14 @@ def _parse_one(source: str | Path | BinaryIO) -> dict:
     return parse_text(text)
 
 
-# ==== Определение роли ====
-
 def _detect_role(filename: str, fields: dict) -> str:
-    """Определяет роль документа: по имени файла, затем по полям."""
     name_lower = filename.lower()
-
-    # 1. По имени файла
     for hint, role in ROLE_NAME_HINTS:
         if hint in name_lower:
             return role
-
-    # 2. По набору полей (fallback)
     keys = set(fields.keys())
     app_markers = {"company_name", "inn", "requested_amount"}
     fin_markers = {"revenue_last_year", "profit_last_year"}
-
     if keys & app_markers:
         return ROLE_APPLICATION
     if keys & fin_markers:
@@ -196,32 +171,11 @@ def _detect_role(filename: str, fields: dict) -> str:
     return ROLE_UNKNOWN
 
 
-# ==== Слияние с приоритетом ====
-
-def _merge_with_priority(
-    documents: list[DocumentInfo],
-) -> tuple[dict, dict[str, str], list[dict]]:
-    """Сливает поля из документов с приоритетом по §4.1.
-
-    Возвращает (merged, sources, conflicts):
-    - merged: {field: value}
-    - sources: {field: filename}
-    - conflicts: [{field, values: {filename: value}, chosen, chosen_source}]
-
-    Правило:
-    - для каждого поля ищем файл с приоритетной ролью (FIELD_PREFERRED_ROLE);
-    - если такого нет — берём из файла с наибольшим приоритетом роли
-      (ROLE_PRIORITY), где поле встретилось;
-    - если поле встретилось в 2+ файлах с РАЗНЫМИ значениями — конфликт.
-    """
-    # Собираем: field -> list[(filename, role, value)]
+def _merge_with_priority(documents: list[DocumentInfo]) -> tuple[dict, dict[str, str], list[dict]]:
     occurrences: dict[str, list[tuple[str, str, object]]] = {}
-
     for doc in documents:
         for field_name, value in doc.fields.items():
-            occurrences.setdefault(field_name, []).append(
-                (doc.filename, doc.role, value)
-            )
+            occurrences.setdefault(field_name, []).append((doc.filename, doc.role, value))
 
     merged: dict = {}
     sources: dict[str, str] = {}
@@ -229,16 +183,12 @@ def _merge_with_priority(
 
     for field_name, occ in occurrences.items():
         preferred_role = FIELD_PREFERRED_ROLE.get(field_name)
-
-        # 1. Приоритетный источник
         chosen = None
         if preferred_role is not None:
             for fname, role, value in occ:
                 if role == preferred_role:
                     chosen = (fname, value)
                     break
-
-        # 2. Fallback: файл с наибольшим приоритетом роли
         if chosen is None:
             occ_sorted = sorted(occ, key=lambda x: ROLE_PRIORITY.get(x[1], 99))
             chosen = (occ_sorted[0][0], occ_sorted[0][2])
@@ -246,12 +196,10 @@ def _merge_with_priority(
         merged[field_name] = chosen[1]
         sources[field_name] = chosen[0]
 
-        # 3. Конфликты: разные значения в разных файлах
         distinct = {}
         for fname, _role, value in occ:
             distinct[fname] = value
-        unique_values = set(distinct.values())
-        if len(unique_values) > 1:
+        if len(set(distinct.values())) > 1:
             conflicts.append({
                 "field": field_name,
                 "values": distinct,
@@ -262,26 +210,11 @@ def _merge_with_priority(
     return merged, sources, conflicts
 
 
-# ==== Публичный API ====
-
-def extract_bundle(
-    files: list,
-    business_description: str = "",
-) -> BundleResult:
-    """Обрабатывает пакет 1–3 файлов одной заявки.
-
-    Возвращает BundleResult с полями, источниками, ролями и конфликтами.
-    Бросает ExtractionFailed, если ни один файл не прочитался.
-
-    files: список UploadFile (с .filename и .file) или путей.
-    business_description: значение из формы — перекрывает PDF (роль description).
-    """
+def extract_bundle(files: list, business_description: str = "") -> BundleResult:
     documents: list[DocumentInfo] = []
     read_any = False
 
     for f in files:
-        # Для UploadFile — .filename; для Path/str — только имя файла,
-        # не полный путь. Иначе roles/sources содержат /home/user/...
         if getattr(f, "filename", None):
             filename = f.filename
         else:
@@ -302,10 +235,8 @@ def extract_bundle(
 
     merged, sources, conflicts = _merge_with_priority(documents)
 
-    # Описание бизнеса из формы — приоритетнее PDF (§4.1: обязательное поле формы)
     if business_description and business_description.strip():
         if "business_description" in merged:
-            # Конфликт формы и PDF
             if merged["business_description"] != business_description.strip():
                 conflicts.append({
                     "field": "business_description",
@@ -332,26 +263,15 @@ def extract_bundle(
     )
 
 
-# ==== Обратная совместимость ====
-
-def extract_from_files_with_sources(
-    files: list,
-    business_description: str,
-) -> tuple[ExtractedData, str, dict[str, str]]:
-    """Старый API: (data, status, sources). Без roles и conflicts."""
+def extract_from_files_with_sources(files, business_description):
     bundle = extract_bundle(files, business_description)
     return bundle.data, bundle.status, bundle.sources
 
 
-def extract_from_files(
-    files: list,
-    business_description: str,
-) -> tuple[ExtractedData, str]:
-    """Самый старый API: (data, status)."""
+def extract_from_files(files, business_description):
     data, status, _ = extract_from_files_with_sources(files, business_description)
     return data, status
 
 
-def extract_from_pdf(source: str | Path | BinaryIO) -> ExtractedData:
-    """Один PDF -> ExtractedData. Для тестов и отладки."""
+def extract_from_pdf(source) -> ExtractedData:
     return ExtractedData(**_parse_one(source))

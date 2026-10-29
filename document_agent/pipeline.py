@@ -1,17 +1,4 @@
-"""Pipeline обработки документов (спринт 1, §5 шаги 1–5).
-
-Шаги:
-1. Загрузка (проверка формата/размера — на уровне web/app.py)
-2. Извлечение (extraction.extract_bundle + FailureBreaker §8.2)
-3. Структурирование (уже в extraction)
-4. Валидация (validation через HookBus.check_all + field_conflict)
-5. Результат или эскалация (escalation.decide_escalation)
-
-Пакет 1–3 файлов одной заявки:
-- роль каждого документа (application / financial / description)
-- слияние с приоритетом по §4.1
-- конфликты между документами -> warning в validation_results
-"""
+"""Pipeline обработки документов (спринт 1, §5 шаги 1–5)."""
 from __future__ import annotations
 
 import uuid
@@ -47,7 +34,7 @@ async def run_pipeline(
     files: list,
     business_description: str = "",
 ) -> ApplicationResult:
-    """Полный прогон: извлечение -> валидация -> эскалация -> результат."""
+    """Полный прогон Document Agent: извлечение -> валидация -> эскалация."""
     app_id = str(uuid.uuid4())
 
     _audit.append("application.received", {
@@ -96,7 +83,6 @@ async def run_pipeline(
         "conflicts": bundle.conflicts,
     })
 
-    # Конфликты передаём в валидацию через контекст
     validation_ctx = {**bundle.data.model_dump(), "_conflicts": bundle.conflicts}
     policy_results = await _validation_bus.check_all("validate", validation_ctx)
     validation_results = to_validation_results(policy_results)
@@ -112,7 +98,6 @@ async def run_pipeline(
         requested_amount=bundle.data.requested_amount,
     )
 
-    # Если конфликт есть, но decide_escalation не поймал — добавляем причину
     if bundle.conflicts and requires_review:
         conflict_note = (
             f"Конфликты между документами: "
@@ -146,6 +131,130 @@ async def run_pipeline(
         escalation_reason=reason,
     )
 
+
+# ============================================================================
+# Полный процесс (вариант B): 8 этапов по документу коллеги
+# ============================================================================
+
+async def run_full_process(
+    files: list,
+    business_description: str = "",
+) -> "CreditApplication":
+    """Полный процесс заявки: IDP → Оркестратор → агенты → HITL → Evidence.
+
+    Реально: Document Agent (шаг 2) + AuditChain + EvidenceBundle.
+    МОК: Оркестратор, Scoring, Compliance, Review, HITL.
+
+    Возвращает CreditApplication со всеми разделами.
+    """
+    from document_agent.application import CreditApplication
+    from document_agent.agents_mock import (
+        compliance_agent, hitl_agent, review_agent, scoring_agent,
+    )
+    from document_agent.orchestrator_mock import (
+        build_route, discovery, update_route_status,
+    )
+
+    application = CreditApplication()
+    application.application_id = str(uuid.uuid4())
+    application.idempotency_key = f"{application.application_id}_attempt_001"
+
+    _audit.append("idp.received", {
+        "app_id": application.application_id,
+        "channel": application.channel,
+        "manager": application.manager,
+    })
+
+    # ==== Шаг 3: Discovery (МОК) ====
+    disc = discovery(application)
+    application.workflow_id = disc["workflow_id"]
+    application.task_id = disc["task_id"]
+    application.session_id = disc["session_id"]
+    application.r_level = disc["r_level"]
+    application.token_budget = disc["token_budget"]
+    application.policy_ids = disc["policy_ids"]
+    application.spec_pointer = disc["spec_pointer"]
+    application.audit_pointer = f"audit/2026/02/21/{application.session_id}.jsonl"
+
+    _audit.append("orchestrator.discovery", {
+        "app_id": application.application_id,
+        "workflow_id": application.workflow_id,
+        "r_level": application.r_level,
+        "policy_ids": application.policy_ids,
+        "source": "mock",
+    })
+
+    # ==== Шаг 4: Декомпозиция (МОК) ====
+    application.route = build_route(application)
+    update_route_status(application.route, "Оркестратор", "выполнено")
+
+    # ==== Шаг 5.1: Document Agent (РЕАЛЬНО) ====
+    update_route_status(application.route, "Document Agent", "выполняется")
+    application.document_agent_result = await run_pipeline(
+        files, business_description,
+    )
+    update_route_status(
+        application.route, "Document Agent",
+        "выполнено" if application.document_agent_result.extraction_status != "failed"
+        else "ошибка",
+    )
+
+    _audit.append("agent.document.completed", {
+        "app_id": application.application_id,
+        "status": application.document_agent_result.extraction_status,
+        "source": "real",
+    })
+
+    # ==== Шаг 5.2: Scoring (МОК) ====
+    application.scoring_result = scoring_agent(application)
+    update_route_status(application.route, "Scoring Agent", "выполнено (МОК)")
+    _audit.append("agent.scoring.completed", {
+        "app_id": application.application_id,
+        "score": application.scoring_result["score"],
+        "source": "mock",
+    })
+
+    # ==== Шаг 5.3: Compliance (МОК) ====
+    application.compliance_result = compliance_agent(application)
+    update_route_status(application.route, "Compliance Agent", "выполнено (МОК)")
+    _audit.append("agent.compliance.completed", {
+        "app_id": application.application_id,
+        "policies": list(application.compliance_result["policies"].keys()),
+        "source": "mock",
+    })
+
+    # ==== Шаг 5.4: Review (МОК) ====
+    application.review_result = review_agent(
+        application, application.scoring_result, application.compliance_result,
+    )
+    update_route_status(application.route, "Review Agent", "выполнено (МОК)")
+
+    # ==== Шаг 6: HITL (МОК) ====
+    application.hitl_result = hitl_agent(application, application.review_result)
+    update_route_status(
+        application.route, "Андеррайтер (HITL)",
+        "ожидает" if application.hitl_result["required"] else "не требуется",
+    )
+
+    # ==== Шаг 7: Evidence Bundle (реально AuditChain) ====
+    application.evidence_bundle_ref = (
+        f"s3://vtb-msb-evidence/2026/02/21/"
+        f"{application.application_id[:8]}/bundle_001.tar.gz"
+    )
+    update_route_status(application.route, "Оркестратор", "выполнено")
+
+    application.final_status = "ПРИНЯТА_К_ОБРАБОТКЕ"
+
+    _audit.append("workflow.completed", {
+        "app_id": application.application_id,
+        "r_level": application.r_level,
+        "audit_ok": _audit.verify(),
+    })
+
+    return application
+
+
+# ==== Внутренние ====
 
 def _build_bundle(app_id, status, data, validation_results, requires_review, reason, conflicts):
     outcome = "escalated" if requires_review else (

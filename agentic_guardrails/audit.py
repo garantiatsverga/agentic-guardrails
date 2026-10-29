@@ -1,53 +1,53 @@
-"""Append-only Audit Chain с hash-chain — обёртка над Rust-ядром.
+"""Append-only Audit Chain с hash-chain (чистый Python).
 
-API 1:1 с прежней версией. timestamp снаружи — ISO-строка,
-внутри Rust — Unix millis (u64).
+Каждая запись содержит sha256 от {seq, prev_hash, timestamp, event, payload}.
+Изменение любой записи ломает verify() — tamper-evident.
+
+Замена Rust-версии (PyO3) на Python. API 1:1:
+- AuditChain.append(event, payload) -> AuditEntry
+- AuditChain.verify() -> bool
+- AuditChain.entries -> list[AuditEntry]
+- len(chain), chain[i]
+
+timestamp — Unix millis (u64). AuditEntry.timestamp — ISO-строка,
+timestamp_millis — raw.
 """
 from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from ._core import AuditChain as _RustAuditChain
-from ._core import AuditEntry as _RustAuditEntry
+
+GENESIS_HASH = "0" * 64
 
 
+def _now_millis() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+@dataclass
 class AuditEntry:
-    """Обёртка над Rust AuditEntry. timestamp конвертируется в ISO."""
-
-    def __init__(self, inner: _RustAuditEntry) -> None:
-        self._inner = inner
-
-    @property
-    def seq(self) -> int:
-        return self._inner.seq
-
-    @property
-    def prev_hash(self) -> str:
-        return self._inner.prev_hash
+    """Одна запись в цепочке."""
+    seq: int
+    prev_hash: str
+    timestamp_millis: int
+    event: str
+    _payload: Any          # хранится как dict/list/scalar
+    entry_hash: str
 
     @property
     def timestamp(self) -> str:
         """ISO 8601 (UTC) из Unix millis."""
-        dt = datetime.fromtimestamp(self._inner.timestamp / 1000, tz=timezone.utc)
+        dt = datetime.fromtimestamp(self.timestamp_millis / 1000, tz=timezone.utc)
         return dt.isoformat()
 
     @property
-    def timestamp_millis(self) -> int:
-        """Unix millis (raw)."""
-        return self._inner.timestamp
-
-    @property
-    def event(self) -> str:
-        return self._inner.event
-
-    @property
     def payload(self) -> Any:
-        """НОВЫЙ объект. Мутация не влияет на Rust-структуру."""
-        return self._inner.payload()
-
-    @property
-    def entry_hash(self) -> str:
-        return self._inner.entry_hash
+        """Копия payload — мутация не влияет на цепочку."""
+        return json.loads(json.dumps(self._payload))
 
     def __repr__(self) -> str:
         return (
@@ -64,60 +64,67 @@ class AuditChain:
     """
 
     def __init__(self) -> None:
-        self._inner = _RustAuditChain()
+        self._entries: list[AuditEntry] = []
+        self._last_hash: str = GENESIS_HASH
 
     def append(self, event: str, payload: Any) -> AuditEntry:
-        """Добавляет запись.
-
-        payload — любой JSON-сериализуемый объект. Числа — в пределах
-        i64 (-2^63 .. 2^63-1) или float64. Большие числа передавайте
-        строками.
-
-        Бросает ValueError, если payload не сериализуется.
-        """
+        """Добавляет запись. payload — JSON-сериализуемый объект."""
         _validate_payload(payload)
-        return AuditEntry(self._inner.append(event, payload))
+        seq = len(self._entries) + 1
+        ts = _now_millis()
+        entry = AuditEntry(
+            seq=seq,
+            prev_hash=self._last_hash,
+            timestamp_millis=ts,
+            event=event,
+            _payload=json.loads(json.dumps(payload)),  # копия
+            entry_hash="",
+        )
+        entry.entry_hash = _compute_hash(entry)
+        self._last_hash = entry.entry_hash
+        self._entries.append(entry)
+        return entry
 
-    def append_batch(
-        self,
-        events: list[tuple[str, Any]],
-    ) -> list[AuditEntry]:
-        """Добавляет пачку записей за один вызов.
-
-        Эквивалент N × append, но с одним переходом Python<->Rust.
-        Валидация — быстрая (только int на верхнем уровне dict).
-        Если один payload невалиден — вся пачка отклоняется.
-
-        Возвращает список AuditEntry в порядке входа.
-        """
-        for _, payload in events:
-            _validate_payload(payload)
-        return [AuditEntry(e) for e in self._inner.append_batch(events)]
+    def append_batch(self, events: list[tuple[str, Any]]) -> list[AuditEntry]:
+        """Добавляет пачку записей за один вызов."""
+        return [self.append(e, p) for e, p in events]
 
     def verify(self) -> bool:
-        return self._inner.verify()
+        """Проверяет целостность цепочки."""
+        prev = GENESIS_HASH
+        for e in self._entries:
+            if e.prev_hash != prev:
+                return False
+            if _compute_hash(e) != e.entry_hash:
+                return False
+            prev = e.entry_hash
+        return True
 
     @property
     def entries(self) -> list[AuditEntry]:
-        return [AuditEntry(e) for e in self._inner.entries()]
+        return list(self._entries)
 
     def __len__(self) -> int:
-        return len(self._inner)
+        return len(self._entries)
 
     def __repr__(self) -> str:
         return f"AuditChain(len={len(self)})"
 
 
+def _compute_hash(entry: AuditEntry) -> str:
+    canonical = {
+        "seq": entry.seq,
+        "prev_hash": entry.prev_hash,
+        "timestamp": entry.timestamp_millis,
+        "event": entry.event,
+        "payload": entry._payload,
+    }
+    body = json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
 def _validate_payload(payload: Any) -> None:
-    """Проверяет JSON-совместимость payload до передачи в Rust.
-
-    Проверки:
-    - int вне диапазона i64 -> ValueError
-    - не-str ключ в dict -> ValueError
-    - общая JSON-сериализуемость -> ValueError
-    """
-    import json
-
+    """Проверяет JSON-совместимость payload."""
     def check(node: Any, path: str = "$") -> None:
         if isinstance(node, bool):
             return
@@ -129,16 +136,13 @@ def _validate_payload(payload: Any) -> None:
         if isinstance(node, dict):
             for k, v in node.items():
                 if not isinstance(k, str):
-                    raise ValueError(
-                        f"payload key must be str at {path}: {k!r}"
-                    )
+                    raise ValueError(f"payload key must be str at {path}: {k!r}")
                 check(v, f"{path}.{k}")
         elif isinstance(node, (list, tuple)):
             for i, v in enumerate(node):
                 check(v, f"{path}[{i}]")
 
     check(payload)
-
     try:
         json.dumps(payload)
     except (TypeError, ValueError) as e:
